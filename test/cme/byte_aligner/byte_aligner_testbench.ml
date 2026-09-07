@@ -41,7 +41,14 @@ module Observation = struct
   [@@deriving sexp, equal]
 end
 
-let run ?(seed = 1) () =
+let run ?(seed = 1) ?(max_consume = 8) () =
+  let module Dut = struct
+    include Byte_aligner
+    let create = create_with_limit ~max_consume
+    let name = "byte_aligner"
+  end in
+  let module Fixture = Sim_fixture.Make (Dut) in
+  let module Step = Fixture.Step in
   let random = Random.State.make [| 0x434d45; seed |] in
   let chance n = Random.State.int random n = 0 in
   let testbench (handler : Step.Handler.t @ local) _ =
@@ -51,7 +58,7 @@ let run ?(seed = 1) () =
     let input_offset = ref 0 in
     let current_timestamp = ref (Bits.zero 64) in
     let offsets = Array.create ~len:8 false in
-    let counts = Array.create ~len:9 false in
+    let counts = Array.create ~len:(max_consume + 1) false in
     let saw_full, saw_two_pop, saw_boundary_block = ref false, ref false, ref false in
     let cycle, consumed = ref 0, ref 0 in
     while
@@ -81,7 +88,7 @@ let run ?(seed = 1) () =
       in
       let window = current_packet (Queue.to_list expected) in
       let available = List.length window in
-      let request = Random.State.int random (1 + Int.min 8 available) in
+      let request = Random.State.int random (1 + Int.min max_consume available) in
       let command_valid = !cycle >= 60 && not (chance 3) in
       let edge =
         Step.cycle

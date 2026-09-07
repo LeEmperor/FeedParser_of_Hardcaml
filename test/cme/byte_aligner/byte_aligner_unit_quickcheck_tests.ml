@@ -6,11 +6,21 @@
 open! Core
 open Byte_aligner_testbench
 
-let assert_coverage (result : Observation.t) =
+let assert_coverage ?(max_consume = 8) (result : Observation.t) =
   [%test_result: bool list] result.offsets ~expect:(List.init 8 ~f:(Fn.const true));
-  [%test_result: bool list] result.counts ~expect:(List.init 9 ~f:(Fn.const true));
+  [%test_result: bool list] result.counts ~expect:(List.init (max_consume + 1) ~f:(Fn.const true));
   assert (result.full_window && result.two_slot_retirement && result.packet_isolation);
   assert (result.consumed > 1000)
+;;
+
+let%test_unit "two-beat combined collectors consume 0..15 without crossing packets" =
+  Quickcheck.test
+    ~trials:6
+    ~seed:(`Deterministic "phase6-aligner-wide-consumes")
+    ~sexp_of:[%sexp_of: int]
+    ~shrinker:Int.quickcheck_shrinker
+    (Int.gen_incl 1 100000)
+    ~f:(fun seed -> assert_coverage ~max_consume:15 (run ~seed ~max_consume:15 ()))
 ;;
 
 let%test_unit "all offsets, consume counts, two-slot retirement and packet isolation" =
