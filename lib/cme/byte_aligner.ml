@@ -76,12 +76,13 @@ let mask_data data keep =
   |> concat_lsb
 ;;
 
-let create (_scope : Scope.t) (i : _ I.t) =
+let create_with_limit ~max_consume (_scope : Scope.t) (i : _ I.t) =
+  if max_consume < 1 || max_consume > 15 then invalid_arg "aligner consume limit must be 1..15";
   (* spec *)
   let spec = Reg_spec.create ~clock:i.clock_i ~clear:i.reset_i () in
 
   (* en really ought to be removed; will see if there are timing implications *)
-  let active = i.en_i &: ~:(i.reset_i) in
+  let active = (i.en_i &: ~:(i.reset_i)) -- "active" in
 
   (* local aliases *)
   let module B = Cme_types.Ingress_beat in
@@ -118,6 +119,9 @@ let create (_scope : Scope.t) (i : _ I.t) =
   let slot_width      = Signal.width input in
   let slot0, slot1    = Signal.wire slot_width, Signal.wire slot_width in
 
+  (* Byte counts held alongside their slots; see the register assignments below. *)
+  let slot0_bytes, slot1_bytes = Signal.wire 4, Signal.wire 4 in
+
   (* number of occupied slots in the "accumulator" *)
   (* this is the main stateful item;
       00 - no occupied slots
@@ -139,16 +143,16 @@ let create (_scope : Scope.t) (i : _ I.t) =
 
   (* are any of the slots used?  *)
   (* foramlly provable that occupied_slot_count cannot be 11? *)
-  let occupied  = occupied_slot_count <>:. 0 in
+  let occupied  = (occupied_slot_count <>:. 0) -- "occupied" in
 
   (* only when the head is NOT the last, and both slots are occupied can we expand the window *)
-  let join_tail = occupied_slot_count ==:. 2 &:
-                  ~:(head.beat.last) in
+  let join_tail = (occupied_slot_count ==:. 2 &:
+                  ~:(head.beat.last)) -- "join_tail" in
 
   (* figures out the valid bytes from head that weren't consumed in a given cycle *)
   let remaining =
-    uresize (byte_count head.beat.keep) ~width:5 -:
-    (uresize offset ~width:5)
+    (uresize slot0_bytes ~width:5 -:
+    (uresize offset ~width:5)) -- "remaining"
   in
 
   (*
@@ -176,13 +180,14 @@ let create (_scope : Scope.t) (i : _ I.t) =
         join_tail
 
         (* yes - add valid_tail_bytes *)
-        (uresize (byte_count tail.beat.keep) ~width:5)
+        (uresize slot1_bytes ~width:5)
 
         (* no - add nothing *)
         (zero 5)
+    -- "tail_available"
   in
 
-  let stored_available = remaining +: tail_available in
+  let stored_available = (remaining +: tail_available) -- "stored_available" in
 
   (* 5b combinational count of how many consecutive unread bytes, starting at
       data_o byte lane 0, currently belong to this packet and are valid to consume?
@@ -229,34 +234,36 @@ let create (_scope : Scope.t) (i : _ I.t) =
 
       (* no - zero on it *)
       (zero 5)
+    -- "available"
   in
 
   let boundary =
     (* join_Tail, head and tail last might be needed for another compsition; will figure later *)
-    occupied &:
-    (head.beat.last |: (join_tail &: tail.beat.last)) (* last head and tail and join_tail and occupied *)
+    (occupied &:
+    (head.beat.last |: (join_tail &: tail.beat.last))) (* last head and tail and join_tail and occupied *)
+    -- "boundary"
   in
 
   (* valid and things present *)
-  let valid       = active &: (occupied : t) in
-  let requested   = uresize i.consume_count_i ~width:5 in
+  let valid       = (active &: (occupied : t)) -- "valid" in
+  let requested   = (uresize i.consume_count_i ~width:5) -- "requested" in
 
   let consume_ready =
-    valid &:
-    (requested <=:. 8) &:
-    (requested <=: available)
+    (valid &:
+    (requested <=:. max_consume) &:
+    (requested <=: available)) -- "consume_ready"
   in
 
-  let consume = consume_ready &:
+  let consume = (consume_ready &:
                 i.consume_valid_i &:
-                (requested <>:. 0)
+                (requested <>:. 0)) -- "consume"
   in
 
   (* pop the head only if we're to consume, and the requested amount if geq than the remainging *)
-  let pop_head = consume &: (requested >=: remaining) in
+  let pop_head = (consume &: (requested >=: remaining)) -- "pop_head" in
 
   (* requires perfect alignment on requested and available amounts *)
-  let pop_tail = pop_head &: join_tail &: (requested ==: available) in
+  let pop_tail = (pop_head &: join_tail &: (requested ==: available)) -- "pop_tail" in
 
   (* number of things we're grabbing out *)
   let pops =
@@ -264,19 +271,20 @@ let create (_scope : Scope.t) (i : _ I.t) =
       pop_tail
       (of_int_trunc ~width:2 2)
       (uresize pop_head ~width:2)
+    -- "pops"
   in
 
   (* how much we have - how much we're taking out leaves retinaed *)
-  let retained = occupied_slot_count -: pops in
+  let retained = (occupied_slot_count -: pops) -- "retained" in
 
   (* en && ~rst && (retained < 2) *)
   (* may be implications of checking retained < 2 here; might remove this *)
-  let ready = active &: (retained <:. 2) in
+  let ready = (active &: (retained <:. 2)) -- "ready" in
 
   (* handshake *)
-  let push = ready &: i.valid_i in
+  let push = (ready &: i.valid_i) -- "push" in
 
-  occupied_slot_count <-- reg spec ~enable:active (retained +: uresize push ~width:2);
+  occupied_slot_count <-- reg spec ~enable:active (retained +: uresize push ~width:2) -- "occupied_slot_count";
 
   let next_head =
     mux2
@@ -286,6 +294,7 @@ let create (_scope : Scope.t) (i : _ I.t) =
       slot1
       (* else - doesnt matter *)
       slot0
+    -- "next_head"
   in
 
   let next_slot0 =
@@ -298,6 +307,7 @@ let create (_scope : Scope.t) (i : _ I.t) =
 
       (* *)
       next_head
+    -- "next_slot0"
   in
 
   let next_slot1 =
@@ -305,10 +315,47 @@ let create (_scope : Scope.t) (i : _ I.t) =
       (push &: (retained ==:. 1))
       input
       slot1
+    -- "next_slot1"
   in
 
-  slot0 <-- Signal.reg spec ~enable:active next_slot0;
-  slot1 <-- Signal.reg spec ~enable:active next_slot1;
+  slot0 <-- Signal.reg spec ~enable:active next_slot0 -- "slot0";
+  slot1 <-- Signal.reg spec ~enable:active next_slot1 -- "slot1";
+
+  (* byte_count is a priority encoder over the keep mask. Evaluating it from the
+     REGISTERED slot puts it at the head of the critical path, ahead of the whole
+     available -> consume_ready -> consume -> pop_head -> pop_tail -> retained
+     chain; Vivado showed every one of the ten worst paths launching from a single
+     keep bit because of it. These registers evaluate it in the cycle the beat is
+     WRITTEN instead, where there is slack.
+
+     This adds no latency and changes no behaviour: <slot>_bytes becomes valid on
+     exactly the same edge as <slot>, so every consumer sees the count at the same
+     time it sees the data. On reset both clear to zero, and byte_count of a zero
+     keep mask is zero, so the invariant holds from cycle one.
+
+     The muxes below MIRROR next_slot0 / next_slot1 exactly - same conditions, same
+     sources, same enable. If they ever diverge the aligner silently mis-sizes its
+     window, which is invisible at the port boundary until a specific beat pattern
+     hits, so byte_aligner_invariant_tests.ml asserts
+     <slot>_bytes = byte_count <slot>.keep on every cycle. Any change to
+     next_slot0 / next_slot1 must be made here too. *)
+  let input_bytes = byte_count i.keep_i -- "input_bytes" in
+
+  (* mirrors next_head = mux2 pop_head slot1 slot0 *)
+  let next_head_bytes = mux2 pop_head slot1_bytes slot0_bytes -- "next_head_bytes" in
+
+  (* mirrors next_slot0 = mux2 (push &: (retained ==:. 0)) input next_head *)
+  let next_slot0_bytes =
+    mux2 (push &: (retained ==:. 0)) input_bytes next_head_bytes -- "next_slot0_bytes"
+  in
+
+  (* mirrors next_slot1 = mux2 (push &: (retained ==:. 1)) input slot1 *)
+  let next_slot1_bytes =
+    mux2 (push &: (retained ==:. 1)) input_bytes slot1_bytes -- "next_slot1_bytes"
+  in
+
+  slot0_bytes <-- Signal.reg spec ~enable:active next_slot0_bytes -- "slot0_bytes";
+  slot1_bytes <-- Signal.reg spec ~enable:active next_slot1_bytes -- "slot1_bytes";
 
   let next_offset =
     mux2
@@ -318,12 +365,13 @@ let create (_scope : Scope.t) (i : _ I.t) =
          pop_head
          (uresize (requested -: remaining) ~width:3)
          (offset +: uresize requested ~width:3))
+    -- "next_offset"
   in
 
-  offset <-- reg spec ~enable:consume next_offset;
+  offset <-- reg spec ~enable:consume next_offset -- "offset";
 
   (* consumer of boundary *)
-  let packet_end = consume &: boundary &: (requested ==: available) in
+  let packet_end = (consume &: boundary &: (requested ==: available)) -- "packet_end" in
 
   (* assignment group for next offset of the packet *)
   let packet_offset =
@@ -340,15 +388,17 @@ let create (_scope : Scope.t) (i : _ I.t) =
           (* else requested offset for next *)
           (q +: uresize requested ~width:16)
       )
+    -- "packet_offset"
   in
 
-  let first = occupied &: head.beat.first &: (offset ==:. 0) in
-  let timestamp = reg spec ~enable:(consume &: first) head.ingress_timestamp in
+  let first = (occupied &: head.beat.first &: (offset ==:. 0)) -- "first" in
+
+  (* timestamp reg accepts on consume AND first; possible gated enable might not be the best *)
+  let timestamp = Signal.reg spec ~enable:(consume &: first) head.ingress_timestamp -- "timestamp" in
 
   (* large combo vector of the head and tail -> only grabs the tail if the tail is necessary *)
   let window =
-    concat_msb [
-        mux2
+    let tail_data = mux2
             (* if join_tail -> residue has useful data in it *)
             join_tail
 
@@ -356,10 +406,12 @@ let create (_scope : Scope.t) (i : _ I.t) =
             tail.beat.data
 
             (* no - concat zero *)
-            (zero 64)
-
-      ; head.beat.data (* the actual head beat data *)
-    ]
+            (zero 64) in
+    (* Internal message fragments may have a short non-final beat. Compact its valid
+       bytes against the next beat; the public UDP contract still requires full beats. *)
+    let placed_tail = mux slot0_bytes
+        (List.init 9 (fun count -> sll (uresize tail_data ~width:128) ~by:(count * 8))) in
+    (placed_tail |: uresize head.beat.data ~width:128) -- "window"
   in
 
   let aligned =
@@ -370,6 +422,7 @@ let create (_scope : Scope.t) (i : _ I.t) =
            srl window ~by:(n * 8)
                    )
       )
+    -- "aligned"
   in
 
   { O.ready_o = ready
@@ -384,7 +437,9 @@ let create (_scope : Scope.t) (i : _ I.t) =
   }
 [@@@ocamlformat "enable"]
 
-let hierarchical ?instance scope i =
+let create = create_with_limit ~max_consume:8
+
+let hierarchical ?(max_consume = 8) ?instance scope i =
   let module H = Hierarchy.In_scope (I) (O) in
-  H.hierarchical ?instance ~name:"cme_byte_aligner" ~scope create i
+  H.hierarchical ?instance ~name:"cme_byte_aligner" ~scope (create_with_limit ~max_consume) i
 ;;
