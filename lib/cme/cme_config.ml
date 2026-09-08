@@ -10,7 +10,10 @@ type t =
   ; event_fifo_depth : int
   }
 
-let default = { ingress_fifo_depth = 64; event_fifo_depth = 16 }
+(* Ingress carries 65 rather than 64 beats: Elastic_fifo admission is non-greedy, so the
+   last slot cannot be refilled in the cycle it drains, and the extra slot restores the
+   effective 64-beat elasticity. See docs/phase6_notes.md. *)
+let default = { ingress_fifo_depth = 65; event_fifo_depth = 16 }
 
 let validate t =
   if t.ingress_fifo_depth < 1 then invalid_arg "ingress_fifo_depth must be positive";
