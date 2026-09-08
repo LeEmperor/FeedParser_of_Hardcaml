@@ -38,7 +38,13 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create ?(depth = Cme_config.default.ingress_fifo_depth) scope (i : _ I.t) =
+let create
+  ?(depth = Cme_config.default.ingress_fifo_depth)
+  (* extra feature for ready checking on pipeline depths *)
+  ?(greedy_admission = false)
+  scope
+  (i : _ I.t)
+  =
   let item : _ Cme_types.Ingress_beat.t =
     { beat = { data = i.data_i; keep = i.keep_i; first = i.first_i; last = i.last_i }
     ; ingress_timestamp = Signal.mux2 i.first_i i.ingress_timestamp_i (Signal.zero 64)
@@ -47,6 +53,7 @@ let create ?(depth = Cme_config.default.ingress_fifo_depth) scope (i : _ I.t) =
   let fifo =
     Elastic_fifo.create
       ~depth
+      ~greedy_admission
       scope
       ~clock:i.clock_i
       ~reset:i.reset_i
@@ -66,7 +73,18 @@ let create ?(depth = Cme_config.default.ingress_fifo_depth) scope (i : _ I.t) =
   }
 ;;
 
-let hierarchical ?(depth = Cme_config.default.ingress_fifo_depth) ?instance scope i =
+let hierarchical
+  ?(depth = Cme_config.default.ingress_fifo_depth)
+  ?(greedy_admission = false)
+  ?instance
+  scope
+  i
+  =
   let module H = Hierarchy.In_scope (I) (O) in
-  H.hierarchical ?instance ~name:"cme_ingress_fifo" ~scope (create ~depth) i
+  H.hierarchical
+    ?instance
+    ~name:"cme_ingress_fifo"
+    ~scope
+    (create ~depth ~greedy_admission)
+    i
 ;;

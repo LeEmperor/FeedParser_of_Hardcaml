@@ -8,8 +8,25 @@ module Scenarios = Cme_verif.Stream_scenarios
 module Observation = Scenarios.Observation
 module Beat = Scenarios.Beat
 
-let run ?seed ?payloads ?(continuous = false) ?(shim_gaps = false) ?(resets = true) depth =
-  Scenarios.run ?seed ?payloads ~depth ~pass:false ~continuous ~shim_gaps ~resets ()
+let run
+  ?seed
+  ?payloads
+  ?(continuous = false)
+  ?(shim_gaps = false)
+  ?(resets = true)
+  ?(greedy_admission = false)
+  depth
+  =
+  Scenarios.run
+    ?seed
+    ?payloads
+    ~greedy_admission
+    ~depth
+    ~pass:false
+    ~continuous
+    ~shim_gaps
+    ~resets
+    ()
 ;;
 
 let run_literal () =

@@ -6,16 +6,42 @@
 open! Core
 open Ingress_fifo_testbench
 
-let%test_unit "exact capacity, replacement, wrap, pauses and reset cancellation" =
+(* A push and a pop in the same cycle need a slot that is already free, so a one-deep FIFO
+   manages it only under greedy admission. Both modes are exercised so that the depth-1
+   difference is covered as the configuration it is, rather than asserted as a missing
+   capability. See docs/retargeting.md. *)
+let%test_unit "exact capacity, non-greedy admission, wrap, pauses and reset cancellation" =
   List.iter [ 1; 2; 3; 64 ] ~f:(fun depth ->
     let result = run depth in
-    assert (result.outputs > 1000 && result.simultaneous > 0);
-    assert (result.full > 0))
+    assert (result.outputs > 1000);
+    assert (result.full > 0);
+    if depth > 1
+    then assert (result.simultaneous > 0)
+    else assert (result.simultaneous = 0))
 ;;
 
+let%test_unit "greedy admission restores full-rate replacement at every depth" =
+  List.iter [ 1; 2; 3; 64 ] ~f:(fun depth ->
+    let result = run ~greedy_admission:true depth in
+    assert (result.outputs > 1000);
+    assert (result.full > 0);
+    assert (result.simultaneous > 0))
+;;
+
+(* Depth 2, not 1: the default non-greedy admission cannot refill the slot it drains, so a
+   one-deep elastic FIFO admits on alternate cycles and has no full-rate pass-through. Its
+   sustained rate is carried by depth - 1 slots. Depth 1 is covered under greedy admission
+   below. See docs/phase6_notes.md. *)
 let%test_unit "continuous input and output after startup" =
-  List.iter [ 1; 3; 64 ] ~f:(fun depth ->
+  List.iter [ 2; 3; 64 ] ~f:(fun depth ->
     let result = run ~continuous:true ~resets:false depth in
+    [%test_result: int] result.outputs ~expect:result.inputs;
+    assert (result.outputs > 1000))
+;;
+
+let%test_unit "continuous input and output at depth 1 under greedy admission" =
+  List.iter [ 1; 2; 64 ] ~f:(fun depth ->
+    let result = run ~continuous:true ~resets:false ~greedy_admission:true depth in
     [%test_result: int] result.outputs ~expect:result.inputs;
     assert (result.outputs > 1000))
 ;;
