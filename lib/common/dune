@@ -11,7 +11,10 @@
  (names generate)
  (libraries
   core
+  core.command
+  core_unix.command_unix
   hardcaml
+  jane_rope
   hardcaml_networking
   cme_of_hardcaml
   cme_board_validation)

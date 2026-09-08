@@ -3,75 +3,115 @@ open! Hardcaml
 open! Hardcaml_networking
 open! Uart
 
-let uart_circuit () =
-  let scope = Scope.create ~flatten_design:false () in
-  let module Circ = Circuit.With_interface (Uart_test_top.I) (Uart_test_top.O) in
-  ( Circ.create_exn ~name:"uart_test_top" (Uart_test_top.create scope)
-  , Scope.circuit_database scope )
+(* RTL generators, one subcommand per emittable artifact. An explicit target is required,
+   matching hardcaml_networking's generator. Output paths are resolved from the repository
+   root even when this executable is invoked from [lib/common]. *)
+
+module Circ_uart = Circuit.With_interface (Uart_test_top.I) (Uart_test_top.O)
+
+module Circ_cme =
+  Circuit.With_interface
+    (Cme_of_hardcaml.Cme_feed_parser.I)
+    (Cme_of_hardcaml.Cme_feed_parser.O)
+
+module Circ_board =
+  Circuit.With_interface
+    (Cme_board_validation.Cme_feed_parser_validation_harness_arty.I)
+    (Cme_board_validation.Cme_feed_parser_validation_harness_arty.O)
+
+module Circ_byte_aligner =
+  Circuit.With_interface (Cme_of_hardcaml.Byte_aligner.I) (Cme_of_hardcaml.Byte_aligner.O)
+
+let emit ~scope ~path ?(notice = "") circuit =
+  let rtl =
+    Rtl.full_hierarchy
+      (Rtl.create ~database:(Scope.circuit_database scope) Verilog [ circuit ])
+  in
+  let root = Option.value (Sys.getenv "DUNE_SOURCEROOT") ~default:"." in
+  let output = Filename.concat root path in
+  Out_channel.write_all output ~data:(notice ^ Rope.to_string rtl);
+  Stdio.printf "wrote %s\n" output
 ;;
 
-let cme_circuit () =
-  let scope = Scope.create ~flatten_design:false () in
-  let module P = Cme_of_hardcaml.Cme_feed_parser in
-  let module Circ = Circuit.With_interface (P.I) (P.O) in
-  ( Circ.create_exn ~name:"cme_mdp3_feed_parser" (P.create scope)
-  , Scope.circuit_database scope )
+let target ~summary ~build =
+  Command.basic
+    ~summary
+    (Command.Param.return (fun () ->
+       let scope = Scope.create ~flatten_design:false () in
+       build scope))
 ;;
 
-let board_circuit () =
-  let scope = Scope.create ~flatten_design:false () in
-  let module B = Cme_board_validation.Cme_board_top in
-  let module Circ = Circuit.With_interface (B.I) (B.O) in
-  Circ.create_exn ~name:"cme_board_top" (B.create scope), Scope.circuit_database scope
+let uart_cmd =
+  target ~summary:"UART test top -> uart_test_top.v" ~build:(fun scope ->
+    emit
+      ~scope
+      ~path:"uart_test_top.v"
+      (Circ_uart.create_exn ~name:"uart_test_top" (Uart_test_top.create scope)))
 ;;
 
-(* Same datapath as the board build with the UART timing collapsed, so an Icarus run
-   observes complete status records in a few hundred microseconds instead of a second.
-   Only the divisors differ; the module name is distinct so the two can never be confused
-   for one another in a synthesis script. *)
-let core_sim_circuit () =
-  let scope = Scope.create ~flatten_design:false () in
-  let module C = Cme_board_validation.Cme_validation_core in
-  let module Circ = Circuit.With_interface (C.I) (C.O) in
-  ( Circ.create_exn
-      ~name:"cme_validation_core_sim"
-      (C.create ~uart_divisor:4 ~snapshot_cycles:200 scope)
-  , Scope.circuit_database scope )
+let cme_cmd =
+  target ~summary:"CME MDP 3.0 feed parser -> cme_mdp3_feed_parser.v" ~build:(fun scope ->
+    emit
+      ~scope
+      ~path:"cme_mdp3_feed_parser.v"
+      ~notice:"// CME MDP 3.0 template-46 MBP parser; schema ID 1, pinned version 13.\n"
+      (Circ_cme.create_exn
+         ~name:"cme_mdp3_feed_parser"
+         (Cme_of_hardcaml.Cme_feed_parser.create scope)))
 ;;
 
-let byte_aligner_circuit () =
-  let scope = Scope.create ~flatten_design:false () in
-  let module A = Cme_of_hardcaml.Byte_aligner in
-  let module Circ = Circuit.With_interface (A.I) (A.O) in
-  Circ.create_exn ~name:"cme_byte_aligner" (A.create scope), Scope.circuit_database scope
+let board_cmd =
+  target
+    ~summary:
+      "native Arty CME feed-parser harness -> cme_feed_parser_validation_harness_arty.v"
+    ~build:(fun scope ->
+      let module B = Cme_board_validation.Cme_feed_parser_validation_harness_arty in
+      emit
+        ~scope
+        ~path:"cme_feed_parser_validation_harness_arty.v"
+        ~notice:"// Native Arty A7-100T CME feed-parser validation harness.\n"
+        (Circ_board.create_exn
+           ~name:"cme_feed_parser_validation_harness_arty"
+           (B.create scope)))
+;;
+
+let board_sim_cmd =
+  target
+    ~summary:
+      "native Arty harness with accelerated UART -> \
+       cme_feed_parser_validation_harness_arty_sim.v"
+    ~build:(fun scope ->
+      let module B = Cme_board_validation.Cme_feed_parser_validation_harness_arty in
+      emit
+        ~scope
+        ~path:"cme_feed_parser_validation_harness_arty_sim.v"
+        ~notice:
+          "// Native board harness with accelerated UART timing for Phase 7 simulation.\n"
+        (Circ_board.create_exn
+           ~name:"cme_feed_parser_validation_harness_arty_sim"
+           (B.create ~uart_divisor:4 ~snapshot_cycles:200 scope)))
+;;
+
+let byte_aligner_cmd =
+  target ~summary:"CME byte aligner -> cme_byte_aligner.v" ~build:(fun scope ->
+    emit
+      ~scope
+      ~path:"cme_byte_aligner.v"
+      ~notice:
+        "// CME byte aligner; max_consume 8. DUT for validation/synth_harness.sv.\n"
+      (Circ_byte_aligner.create_exn
+         ~name:"cme_byte_aligner"
+         (Cme_of_hardcaml.Byte_aligner.create scope)))
 ;;
 
 let () =
-  let filename, (circ, database), notice =
-    match Array.to_list (Sys.get_argv ()) with
-    | [ _ ] | [ _; "uart" ] -> "uart_test_top.v", uart_circuit (), ""
-    | [ _; "cme" ] ->
-      ( "cme_mdp3_feed_parser.v"
-      , cme_circuit ()
-      , "// CME MDP 3.0 template-46 MBP parser; schema ID 1, pinned version 13.\n" )
-    | [ _; "board" ] ->
-      ( "cme_board_top.v"
-      , board_circuit ()
-      , "// Arty A7-100T CME feed-parser validation harness. Instantiates \
-         udp_rx_64_mac_top,\n\
-         // emitted by hardcaml_networking's own `udp-rx-64` target.\n" )
-    | [ _; "core-sim" ] ->
-      ( "cme_validation_core_sim.v"
-      , core_sim_circuit ()
-      , "// Board datapath with accelerated UART timing, for validation/phase7 only.\n" )
-    | [ _; "byte-aligner" ] ->
-      ( "cme_byte_aligner.v"
-      , byte_aligner_circuit ()
-      , "// CME byte aligner; max_consume 8. DUT for validation/synth_harness.sv.\n" )
-    | _ -> failwith "usage: generate.exe [uart|cme|board|core-sim|byte-aligner]"
-  in
-  let hier = Rtl.create ~database Verilog [ circ ] in
-  let rtl = Rtl.full_hierarchy hier in
-  Out_channel.write_all filename ~data:(notice ^ Rope.to_string rtl);
-  Stdio.printf "Generated %s\n" filename
+  Command_unix.run
+    (Command.group
+       ~summary:"CME Hardcaml RTL generators (specify a target)"
+       [ "uart", uart_cmd
+       ; "cme", cme_cmd
+       ; "cme_feed_parser_validation_harness_arty", board_cmd
+       ; "cme_feed_parser_validation_harness_arty_sim", board_sim_cmd
+       ; "byte-aligner", byte_aligner_cmd
+       ])
 ;;
