@@ -28,10 +28,18 @@ module O = struct
   [@@deriving hardcaml]
 end
 
-let create ?(depth = Cme_config.default.event_fifo_depth) scope (i : _ I.t) =
+let create
+  ?(depth = Cme_config.default.event_fifo_depth)
+  ?(fallthrough = false)
+  ?(greedy_admission = false)
+  scope
+  (i : _ I.t)
+  =
   let fifo =
     Elastic_fifo.create
       ~depth
+      ~fallthrough
+      ~greedy_admission
       scope
       ~clock:i.clock_i
       ~reset:i.reset_i
@@ -43,7 +51,19 @@ let create ?(depth = Cme_config.default.event_fifo_depth) scope (i : _ I.t) =
   { O.event_ready_o = fifo.ready; event_valid_o = fifo.valid; event_o = fifo.data }
 ;;
 
-let hierarchical ?(depth = Cme_config.default.event_fifo_depth) ?instance scope i =
+let hierarchical
+  ?(depth = Cme_config.default.event_fifo_depth)
+  ?(fallthrough = false)
+  ?(greedy_admission = false)
+  ?instance
+  scope
+  i
+  =
   let module H = Hierarchy.In_scope (I) (O) in
-  H.hierarchical ?instance ~name:"cme_event_fifo" ~scope (create ~depth) i
+  H.hierarchical
+    ?instance
+    ~name:"cme_event_fifo"
+    ~scope
+    (create ~depth ~fallthrough ~greedy_admission)
+    i
 ;;
