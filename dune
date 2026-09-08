@@ -1,0 +1,8 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; vendor/ holds a link to a hardcaml_networking checkout (scripts/link-networking.sh).
+; Marking it vendored keeps its warnings, tests and formatting out of this repo's
+; @default/@runtest/@fmt aliases while still letting dune build the libraries we
+; depend on. See hardcaml_networking's docs/library_deduplication_and_vendoring.md.
+(vendored_dirs vendor)
