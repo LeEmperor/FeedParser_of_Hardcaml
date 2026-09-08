@@ -1,12 +1,17 @@
 (* University of Florida *)
 (* Author: Bohdan Purtell *)
 (* Module: "byte_aligner.ml" *)
-(* Two stored beats expose a low-byte-first peek window
+(* Three stored beats; the leading two expose a low-byte-first peek window
 
-   An accepted consume retires 0..8 bytes; filling a free slot may extend the window
-   without consuming anything
+   An accepted consume retires up to eight bytes by default, or up to fifteen with
+   create_with_limit; filling a free slot may extend the window without consuming anything
 
-   A following packet can occupy slot 1 but is never visible in the current window
+   A following packet can occupy slot 1 or slot 2 but is never visible in the current
+   window
+
+   ready_o reads occupied_slot_count directly and never this cycle's consume decision, so
+   admission is a purely registered decision. The third slot is what buys that at full
+   rate; see docs/phase6_notes.md
 *)
 
 open! Hardcaml
@@ -114,19 +119,27 @@ let create_with_limit ~max_consume (_scope : Scope.t) (i : _ I.t) =
   in
 
   (* a single pulse contains the Beat.t item, as well as a timestamp;
-     we need storage for (2) of these at a time to shift in a new one, and hold un-consumed residue from n-1
+     we need storage for (3) of these at a time: (2) to shift in a new one and hold
+     un-consumed residue from n-1, plus a spare behind them so that admission can be
+     decided from the registered count alone. Only slot0 and slot1 are ever peeked
   *)
   let slot_width      = Signal.width input in
-  let slot0, slot1    = Signal.wire slot_width, Signal.wire slot_width in
+  let slot0, slot1, slot2 =
+    Signal.wire slot_width, Signal.wire slot_width, Signal.wire slot_width
+  in
 
   (* Byte counts held alongside their slots; see the register assignments below. *)
-  let slot0_bytes, slot1_bytes = Signal.wire 4, Signal.wire 4 in
+  let slot0_bytes, slot1_bytes, slot2_bytes =
+    Signal.wire 4, Signal.wire 4, Signal.wire 4
+  in
 
   (* number of occupied slots in the "accumulator" *)
   (* this is the main stateful item;
       00 - no occupied slots
       01 - head occupied (slot0)
       10 - head and tail occupied (slot0 and slot1 respectiveuly)
+      11 - head, tail and the spare occupied; slot2 is storage only and is never
+           visible in the peek window
 *)
   let occupied_slot_count           = Signal.wire 2 in
 
@@ -145,8 +158,9 @@ let create_with_limit ~max_consume (_scope : Scope.t) (i : _ I.t) =
   (* foramlly provable that occupied_slot_count cannot be 11? *)
   let occupied  = (occupied_slot_count <>:. 0) -- "occupied" in
 
-  (* only when the head is NOT the last, and both slots are occupied can we expand the window *)
-  let join_tail = (occupied_slot_count ==:. 2 &:
+  (* only when the head is NOT the last, and both window slots are occupied can we expand
+     the window; slot2 sits behind the window, so two and three occupied both qualify *)
+  let join_tail = (occupied_slot_count >=:. 2 &:
                   ~:(head.beat.last)) -- "join_tail" in
 
   (* figures out the valid bytes from head that weren't consumed in a given cycle *)
@@ -277,25 +291,43 @@ let create_with_limit ~max_consume (_scope : Scope.t) (i : _ I.t) =
   (* how much we have - how much we're taking out leaves retinaed *)
   let retained = (occupied_slot_count -: pops) -- "retained" in
 
-  (* en && ~rst && (retained < 2) *)
-  (* may be implications of checking retained < 2 here; might remove this *)
-  let ready = (active &: (retained <:. 2)) -- "ready" in
+  (* Non-greedy admission. This reads the count REGISTER, not retained, so ready_o carries
+     no dependency on this cycle's consume_count_i and becomes a fresh launch point rather
+     than a hop in a chain of combinationally transparent readies.
+
+     The third slot is a correctness requirement of that rule, not headroom. With two slots
+     the occupancy would oscillate 1 -> 2 -> 1, and in every count == 1 cycle the window
+     holds only the head, so available <= 8 - too little for packet_header's twelve-byte
+     collect or for either max_consume:15 consumer, and the stage would accept a beat only
+     every other cycle. At three slots the steady state parks at two occupied and the
+     head-plus-tail window stays full. See docs/phase6_notes.md. *)
+  let ready = (active &: (occupied_slot_count <:. 3)) -- "ready" in
 
   (* handshake *)
   let push = (ready &: i.valid_i) -- "push" in
 
   occupied_slot_count <-- reg spec ~enable:active (retained +: uresize push ~width:2) -- "occupied_slot_count";
 
+  (* Retiring shifts every slot down by pops, so slot n takes slot (n + pops). pop_tail
+     implies pop_head, so pops is 2 exactly when pop_tail and 1 exactly when pop_head
+     without it. Positions past retained are don't-care and simply hold the spare. *)
   let next_head =
     mux2
-      (* if the head is being removed *)
-      pop_head
-      (* move slot 1 into next slot 0 *)
-      slot1
-      (* else - doesnt matter *)
-      slot0
+      (* both window slots retire - the spare becomes the head *)
+      pop_tail
+      slot2
+      (mux2
+         (* if the head is being removed *)
+         pop_head
+         (* move slot 1 into next slot 0 *)
+         slot1
+         (* else - doesnt matter *)
+         slot0)
     -- "next_head"
   in
+
+  (* slot (1 + pops): the spare for one or two pops, and two pops leaves it don't-care *)
+  let next_mid = mux2 pop_head slot2 slot1 -- "next_mid" in
 
   let next_slot0 =
     mux2
@@ -314,12 +346,24 @@ let create_with_limit ~max_consume (_scope : Scope.t) (i : _ I.t) =
     mux2
       (push &: (retained ==:. 1))
       input
-      slot1
+      next_mid
     -- "next_slot1"
+  in
+
+  (* ready holds occupied_slot_count <= 2 whenever push is set, so retained <= 2 and this
+     is the last position an accepted beat can land in. slot (2 + pops) is only meaningful
+     with no pops, so the spare otherwise just holds. *)
+  let next_slot2 =
+    mux2
+      (push &: (retained ==:. 2))
+      input
+      slot2
+    -- "next_slot2"
   in
 
   slot0 <-- Signal.reg spec ~enable:active next_slot0 -- "slot0";
   slot1 <-- Signal.reg spec ~enable:active next_slot1 -- "slot1";
+  slot2 <-- Signal.reg spec ~enable:active next_slot2 -- "slot2";
 
   (* byte_count is a priority encoder over the keep mask. Evaluating it from the
      REGISTERED slot puts it at the head of the critical path, ahead of the whole
@@ -333,29 +377,41 @@ let create_with_limit ~max_consume (_scope : Scope.t) (i : _ I.t) =
      time it sees the data. On reset both clear to zero, and byte_count of a zero
      keep mask is zero, so the invariant holds from cycle one.
 
-     The muxes below MIRROR next_slot0 / next_slot1 exactly - same conditions, same
-     sources, same enable. If they ever diverge the aligner silently mis-sizes its
-     window, which is invisible at the port boundary until a specific beat pattern
-     hits, so byte_aligner_invariant_tests.ml asserts
+     The muxes below MIRROR next_slot0 / next_slot1 / next_slot2 exactly - same
+     conditions, same sources, same enable. If they ever diverge the aligner silently
+     mis-sizes its window, which is invisible at the port boundary until a specific beat
+     pattern hits, so byte_aligner_invariant_tests.ml asserts
      <slot>_bytes = byte_count <slot>.keep on every cycle. Any change to
-     next_slot0 / next_slot1 must be made here too. *)
+     next_slot0 / next_slot1 / next_slot2 must be made here too. *)
   let input_bytes = byte_count i.keep_i -- "input_bytes" in
 
-  (* mirrors next_head = mux2 pop_head slot1 slot0 *)
-  let next_head_bytes = mux2 pop_head slot1_bytes slot0_bytes -- "next_head_bytes" in
+  (* mirrors next_head = mux2 pop_tail slot2 (mux2 pop_head slot1 slot0) *)
+  let next_head_bytes =
+    mux2 pop_tail slot2_bytes (mux2 pop_head slot1_bytes slot0_bytes)
+    -- "next_head_bytes"
+  in
+
+  (* mirrors next_mid = mux2 pop_head slot2 slot1 *)
+  let next_mid_bytes = mux2 pop_head slot2_bytes slot1_bytes -- "next_mid_bytes" in
 
   (* mirrors next_slot0 = mux2 (push &: (retained ==:. 0)) input next_head *)
   let next_slot0_bytes =
     mux2 (push &: (retained ==:. 0)) input_bytes next_head_bytes -- "next_slot0_bytes"
   in
 
-  (* mirrors next_slot1 = mux2 (push &: (retained ==:. 1)) input slot1 *)
+  (* mirrors next_slot1 = mux2 (push &: (retained ==:. 1)) input next_mid *)
   let next_slot1_bytes =
-    mux2 (push &: (retained ==:. 1)) input_bytes slot1_bytes -- "next_slot1_bytes"
+    mux2 (push &: (retained ==:. 1)) input_bytes next_mid_bytes -- "next_slot1_bytes"
+  in
+
+  (* mirrors next_slot2 = mux2 (push &: (retained ==:. 2)) input slot2 *)
+  let next_slot2_bytes =
+    mux2 (push &: (retained ==:. 2)) input_bytes slot2_bytes -- "next_slot2_bytes"
   in
 
   slot0_bytes <-- Signal.reg spec ~enable:active next_slot0_bytes -- "slot0_bytes";
   slot1_bytes <-- Signal.reg spec ~enable:active next_slot1_bytes -- "slot1_bytes";
+  slot2_bytes <-- Signal.reg spec ~enable:active next_slot2_bytes -- "slot2_bytes";
 
   let next_offset =
     mux2
@@ -407,11 +463,7 @@ let create_with_limit ~max_consume (_scope : Scope.t) (i : _ I.t) =
 
             (* no - concat zero *)
             (zero 64) in
-    (* Internal message fragments may have a short non-final beat. Compact its valid
-       bytes against the next beat; the public UDP contract still requires full beats. *)
-    let placed_tail = mux slot0_bytes
-        (List.init 9 (fun count -> sll (uresize tail_data ~width:128) ~by:(count * 8))) in
-    (placed_tail |: uresize head.beat.data ~width:128) -- "window"
+    concat_msb [ tail_data; head.beat.data ] -- "window"
   in
 
   let aligned =
@@ -441,5 +493,10 @@ let create = create_with_limit ~max_consume:8
 
 let hierarchical ?(max_consume = 8) ?instance scope i =
   let module H = Hierarchy.In_scope (I) (O) in
-  H.hierarchical ?instance ~name:"cme_byte_aligner" ~scope (create_with_limit ~max_consume) i
+  H.hierarchical
+    ?instance
+    ~name:"cme_byte_aligner"
+    ~scope
+    (create_with_limit ~max_consume)
+    i
 ;;

@@ -1,0 +1,14 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Arty board validation harness for the CME feed parser. Board-level scaffolding is kept
+; OUTSIDE lib/, mirroring hardcaml_networking's validation/ layout. The networking stack
+; enters this design as generated Verilog, never as an OCaml dependency.
+(library
+ (name cme_board_validation)
+ (libraries core hardcaml helper_circuits cme_of_hardcaml)
+ (modules board_scaffolding cme_validation_sink cme_validation_core cme_board_top)
+ (flags
+  (:standard -w -27-57-33-34-35-40-63-47-26))
+ (preprocess
+  (pps ppx_hardcaml ppx_jane)))

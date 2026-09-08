@@ -1,0 +1,25 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Board integration suite: port selection, parser composition, counter wiring.
+
+(library
+ (name validation_core_inline_tests)
+ (modules
+  validation_core_testbench
+  validation_core_unit_quickcheck_tests
+  validation_core_expect_tests)
+ ; ppx_expect v0.18 preview needs the copied source directory as its root.
+ (inline_tests
+  (deps ../../../docs/templates.xml)
+  (flags (:standard -source-tree-root .)))
+ (libraries
+  core
+  hardcaml
+  cme_of_hardcaml
+  cme_board_validation
+  schema_test_support
+  stream_test_support
+  hardcaml_step_testbench
+  hardcaml_verif)
+ (preprocess (pps ppx_hardcaml ppx_jane)))

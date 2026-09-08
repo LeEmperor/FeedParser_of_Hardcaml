@@ -1,0 +1,21 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Board-observability suite: counter model, independent UART pin decoder, expect trace.
+
+(library
+ (name validation_sink_inline_tests)
+ (modules
+  validation_sink_testbench
+  validation_sink_unit_quickcheck_tests
+  validation_sink_expect_tests)
+ ; ppx_expect v0.18 preview needs the copied source directory as its root.
+ (inline_tests (flags (:standard -source-tree-root .)))
+ (libraries
+  core
+  hardcaml
+  cme_of_hardcaml
+  cme_board_validation
+  hardcaml_step_testbench
+  hardcaml_verif)
+ (preprocess (pps ppx_hardcaml ppx_jane)))

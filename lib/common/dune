@@ -7,6 +7,7 @@
   uart_of_hardcaml
   helper_circuits
   cme_of_hardcaml
+  cme_board_validation
   )
  (modules generate)
  (flags (:standard -w -27-57-33-34-35-40-63-47-26))
