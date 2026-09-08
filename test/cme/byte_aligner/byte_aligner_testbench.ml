@@ -2,7 +2,11 @@
 (* Author: Bohdan Purtell *)
 (* Module: "byte_aligner_testbench.ml" *)
 (* Peek/consume Step driver. Ready/valid and windows use before_edge; held state uses
-   after_edge. Independent accepted-byte queue never borrows a following packet. *)
+   after_edge. Independent accepted-byte queue never borrows a following packet.
+
+   The aligner stores three beats but exposes only the leading two, so the model tags each
+   accepted byte with the beat that carried it and clips the expected window to the first
+   two resident beats. *)
 
 open! Core
 open! Hardcaml
@@ -18,6 +22,8 @@ type byte =
   ; last : bool
   ; offset : int
   ; timestamp : Bits.t
+  ; (* Which accepted beat carried this byte; only the two leading beats are visible. *)
+    beat : int
   }
 
 module Dut = struct
@@ -44,9 +50,11 @@ end
 let run ?(seed = 1) ?(max_consume = 8) () =
   let module Dut = struct
     include Byte_aligner
+
     let create = create_with_limit ~max_consume
     let name = "byte_aligner"
-  end in
+  end
+  in
   let module Fixture = Sim_fixture.Make (Dut) in
   let module Step = Fixture.Step in
   let random = Random.State.make [| 0x434d45; seed |] in
@@ -56,6 +64,7 @@ let run ?(seed = 1) ?(max_consume = 8) () =
     let todo, pending = ref source, ref None in
     let expected = Queue.create () in
     let input_offset = ref 0 in
+    let input_beat = ref 0 in
     let current_timestamp = ref (Bits.zero 64) in
     let offsets = Array.create ~len:8 false in
     let counts = Array.create ~len:(max_consume + 1) false in
@@ -86,7 +95,18 @@ let run ?(seed = 1) ?(max_consume = 8) () =
         | [] -> []
         | b :: rest -> b :: (if b.last then [] else current_packet rest)
       in
-      let window = current_packet (Queue.to_list expected) in
+      (* slot2 is storage behind the window: only the head beat and, when the head is not
+         the packet's last beat, the one behind it can be peeked. *)
+      let resident =
+        List.group (Queue.to_list expected) ~break:(fun a b -> a.beat <> b.beat)
+      in
+      let visible =
+        match resident with
+        | [] -> []
+        | [ head ] -> head
+        | head :: tail :: _ -> head @ tail
+      in
+      let window = current_packet visible in
       let available = List.length window in
       let request = Random.State.int random (1 + Int.min max_consume available) in
       let command_valid = !cycle >= 60 && not (chance 3) in
@@ -181,8 +201,10 @@ let run ?(seed = 1) ?(max_consume = 8) () =
             ; last = offered.last && n = String.length s - 1
             ; offset = !input_offset + n
             ; timestamp = !current_timestamp
+            ; beat = !input_beat
             });
         input_offset := !input_offset + String.length s;
+        incr input_beat;
         todo := List.tl_exn !todo;
         pending := None);
       let held_offset, held_data = o.packet_byte_offset_o, o.data_o in

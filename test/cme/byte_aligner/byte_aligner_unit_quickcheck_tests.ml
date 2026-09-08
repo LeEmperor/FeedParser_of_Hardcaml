@@ -8,7 +8,9 @@ open Byte_aligner_testbench
 
 let assert_coverage ?(max_consume = 8) (result : Observation.t) =
   [%test_result: bool list] result.offsets ~expect:(List.init 8 ~f:(Fn.const true));
-  [%test_result: bool list] result.counts ~expect:(List.init (max_consume + 1) ~f:(Fn.const true));
+  [%test_result: bool list]
+    result.counts
+    ~expect:(List.init (max_consume + 1) ~f:(Fn.const true));
   assert (result.full_window && result.two_slot_retirement && result.packet_isolation);
   assert (result.consumed > 1000)
 ;;
