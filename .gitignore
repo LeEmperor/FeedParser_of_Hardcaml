@@ -28,3 +28,6 @@ env.sh
 
 #claude
 CLAUDE.md
+
+# vendored networking checkout (see scripts/link-networking.sh)
+/vendor/
