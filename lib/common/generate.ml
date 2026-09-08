@@ -1,6 +1,7 @@
 open! Core
 open! Hardcaml
-open! Uart_of_hardcaml
+open! Hardcaml_networking
+open! Uart
 
 let uart_circuit () =
   let scope = Scope.create ~flatten_design:false () in
