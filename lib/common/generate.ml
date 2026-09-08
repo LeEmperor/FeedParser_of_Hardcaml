@@ -105,13 +105,25 @@ let byte_aligner_cmd =
 ;;
 
 let () =
+  (* [Core.Command] requires dashes in registered subcommand names. Accept the RTL
+     top-level spelling with underscores at the CLI and normalize it before dispatch, so
+     the target requested by users and scripts still exactly matches the emitted module. *)
+  let argv =
+    match Array.to_list (Sys.get_argv ()) with
+    | executable :: "cme_feed_parser_validation_harness_arty" :: rest ->
+      executable :: "cme-feed-parser-validation-harness-arty" :: rest
+    | executable :: "cme_feed_parser_validation_harness_arty_sim" :: rest ->
+      executable :: "cme-feed-parser-validation-harness-arty-sim" :: rest
+    | argv -> argv
+  in
   Command_unix.run
+    ~argv
     (Command.group
        ~summary:"CME Hardcaml RTL generators (specify a target)"
        [ "uart", uart_cmd
        ; "cme", cme_cmd
-       ; "cme_feed_parser_validation_harness_arty", board_cmd
-       ; "cme_feed_parser_validation_harness_arty_sim", board_sim_cmd
+       ; "cme-feed-parser-validation-harness-arty", board_cmd
+       ; "cme-feed-parser-validation-harness-arty-sim", board_sim_cmd
        ; "byte-aligner", byte_aligner_cmd
        ])
 ;;
