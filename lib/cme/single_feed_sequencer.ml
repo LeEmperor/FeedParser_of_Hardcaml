@@ -2,10 +2,25 @@
 (* Author: Bohdan Purtell *)
 (* Module: "single_feed_sequencer.ml" *)
 (* Single-feed admission with ordered diagnostics. Controls must be fenced by the
-   composition boundary; quiescent_i includes downstream pending work. *)
+   composition boundary; quiescent_i includes downstream pending work.
+*)
 
 open! Hardcaml
 open Signal
+
+[@@@ocamlformat "disable"]
+(* general dataflow:
+
+  takes in a formed item out of the packet header
+
+
+  looks at if the item is a start item, and checks the seq num only then on the packet;
+
+  as long as the seq num was obeyed in order, the body of the packet is then passed downstream
+
+  this module acts as an entire gate between the packet_header and the rest of the packet_pipeline itself
+  in terms of passing body information
+*)
 
 module I = struct
   type 'a t =
@@ -13,11 +28,14 @@ module I = struct
       clock_i : 'a
     ; reset_i : 'a
     ; en_i : 'a
+
     ; (* Ordered pre-sequence Packet_item stream from header extraction. *)
       item_i : 'a [@bits Cme_types.packet_item_width]
+
     ; valid_i : 'a
     ; (* Consumer of the packed canonical packet stream. *)
       ready_i : 'a
+
     ; (* No buffered upstream or downstream work; requests are not latched while busy. *)
       quiescent_i : 'a
     ; session_reset_i : 'a
@@ -38,49 +56,130 @@ module O = struct
     }
   [@@deriving hardcaml]
 end
+[@@@ocamlformat "enable"]
 
+[@@@ocamlformat "disable"]
 let create (_scope : Scope.t) (i : _ I.t) =
-  let module T = Cme_types in
+  (* spec *)
   let spec = Reg_spec.create ~clock:i.clock_i ~clear:i.reset_i () in
+
+  (* local aliases *)
+  let module T = Cme_types in
+
+  (* readily available *)
   let active = i.en_i &: ~:(i.reset_i) in
+
   let item = T.Packet_item.Of_signal.unpack i.item_i in
-  let initialized, channel_valid, expected = wire 1, wire 1, wire 32 in
-  let dropping, gap_sent, open_packet = wire 1, wire 1, wire 1 in
-  let idle = ~:(dropping |: gap_sent |: open_packet) in
+
+  (* Later derived hangers: each is the Q net of a register driven at the bottom of this
+     function. Named so timing reports and waveforms read as [expected -> channel_valid]
+     rather than [signal_reg_3_reg[6]]; see the naming rule in docs/timing_notes.md. *)
+  let initialized   = Signal.wire 1  -- "initialized"   in
+  let channel_valid = Signal.wire 1  -- "channel_valid" in
+  let dropping      = Signal.wire 1  -- "dropping"      in
+  let gap_sent      = Signal.wire 1  -- "gap_sent"      in
+  let open_packet   = Signal.wire 1  -- "open_packet"   in
+  let expected      = Signal.wire 32 -- "expected"      in
+
+  let idle = ~:(dropping |:
+                gap_sent |:
+                open_packet)
+  in
+
   let control_ready = active &: idle &: i.quiescent_i in
   let session_reset = control_ready &: i.session_reset_i in
-  let resync = control_ready &: ~:(i.session_reset_i) &: i.resync_valid_i in
+
+  (* are we ready and not resetting the session and doing a resync *)
+  let resync = control_ready &:
+               ~:(i.session_reset_i) &:
+               i.resync_valid_i
+  in
+
   let control = session_reset |: resync in
+
+  (* are we beginning a packet? where do the sideband items come from? *)
   let start = item.kind ==:. T.Packet_item_kind.start in
   let diagnostic = item.kind ==:. T.Packet_item_kind.diagnostic in
+
+  (* last indicator; interesting derive for the start/body_empty pair *)
   let last = item.beat.last |: (start &: item.body_empty) in
+
+  (* actual sequencing wire *)
   let delta = item.context.packet_seq -: expected in
   let late = msb delta in
-  let fault = start &: initialized &: (delta <>:. 0) &: ~:gap_sent in
+
+  let fault =
+    start &: (* have we started? *)
+    initialized &: (* are we stream reading? *)
+    (delta <>:. 0) &: (* if the delta is greater than 0 then cook *)
+    ~:gap_sent (* if a gap is sent then a fault has happened obviously *)
+  in
+
   let emit_fault = fault &: ~:dropping in
+
+  (* handshake  *)
   let valid = active &: i.valid_i &: ~:dropping &: ~:control in
-  let ready = active &: ~:control &: (dropping |: (i.ready_i &: ~:emit_fault)) in
+  let ready = active &:
+              ~:control &:
+              (dropping |:
+               (i.ready_i &:
+                ~:emit_fault)
+              )
+  in
+
   let input_transfer = i.valid_i &: ready in
   let fault_transfer = valid &: i.ready_i &: emit_fault in
   let admit = input_transfer &: start &: ~:dropping in
+
   initialized
-  <-- reg
-        spec
-        ~enable:active
-        (mux2 session_reset gnd (mux2 (resync |: admit) vdd initialized));
-  expected
-  <-- reg
+  <-- Signal.reg
         spec
         ~enable:active
         (mux2
+          (* did the session reset? *)
            session_reset
-           (zero 32)
+
+           (* yes : zero it *)
+           gnd
+
+           (* no - *)
            (mux2
+              (resync |: admit) (* if we're resyncing or admitting, then write 1 *)
+              vdd (* 1 *)
+              initialized (* else the previously held value *)
+           )
+        );
+
+  expected
+  <-- Signal.reg
+        spec
+        ~enable:active
+        (mux2
+          (* is the session being reset? *)
+           session_reset
+
+          (* zero out *)
+           (zero 32)
+
+           (mux2
+             (* are we re-syncing? *)
               resync
-              i.resync_next_seq_i
-              (mux2 admit (item.context.packet_seq +:. 1) expected)));
+
+              (* yes -*)
+              i.resync_next_seq_i (* next seq num *)
+
+              (* no - cascade *)
+              (mux2
+                 admit (* do we admit the item?  *)
+                 (item.context.packet_seq +:. 1) (* yes -> increm the packet seq expected next cycle val *)
+                 expected (* hold the expected *)
+              )
+           )
+        );
+
+  (* marked low if we miss a seq num *)
   channel_valid
-  <-- reg
+  <-- Signal.reg
         spec
         ~enable:active
         (mux2
@@ -92,22 +191,37 @@ let create (_scope : Scope.t) (i : _ I.t) =
               (mux2
                  (fault_transfer &: ~:late)
                  gnd
-                 (mux2 (admit &: ~:initialized) vdd channel_valid))));
+                 (mux2
+                    (admit &: ~:initialized)
+                    vdd
+                    channel_valid)))
+        );
+
   dropping
-  <-- reg
+  <-- Signal.reg
         spec
         ~enable:active
         (mux2 (fault_transfer &: late) vdd (mux2 (input_transfer &: last) gnd dropping));
+
   gap_sent
-  <-- reg
+  <-- Signal.reg
         spec
         ~enable:active
         (mux2 (fault_transfer &: ~:late) vdd (mux2 admit gnd gap_sent));
+
   open_packet
-  <-- reg spec ~enable:active (mux2 (input_transfer &: ~:diagnostic) ~:last open_packet);
+  <-- Signal.reg spec ~enable:active (mux2 (input_transfer &: ~:diagnostic) ~:last open_packet);
+
   let admitted_context =
-    { item.context with channel_valid = mux2 initialized channel_valid vdd }
+    { item.context with channel_valid =
+                          mux2
+                            initialized
+                            channel_valid
+                            vdd
+    }
   in
+
+  (* correctly draw through packet item *)
   let passed =
     { item with
       context = T.Packet_context.Of_signal.mux2 start admitted_context item.context
@@ -118,6 +232,8 @@ let create (_scope : Scope.t) (i : _ I.t) =
           item.diagnostic
     }
   in
+
+  (* event candidate *)
   let event =
     { (T.Event.Of_signal.zero ()) with
       kind = of_int_trunc ~width:2 T.Event_kind.diagnostic
@@ -131,21 +247,33 @@ let create (_scope : Scope.t) (i : _ I.t) =
     ; expected_seq_present = vdd
     }
   in
+
+  (* form the fault item candidate *)
   let fault_item =
     { (T.Packet_item.Of_signal.zero ()) with
-      kind = of_int_trunc ~width:2 T.Packet_item_kind.diagnostic
+      kind = of_int_trunc ~width:2 T.Packet_item_kind.diagnostic (* from the diagnostic item declare *)
     ; diagnostic = event
     }
   in
-  { O.ready_o = ready
+
+  { O.
+    ready_o = ready
   ; valid_o = valid
-  ; item_o =
-      T.Packet_item.Of_signal.pack
-        (T.Packet_item.Of_signal.mux2 emit_fault fault_item passed)
+  ; item_o  =
+      T.Packet_item.Of_signal.pack (* compose the Signal packed-scalar into a vector *)
+        (T.Packet_item.Of_signal.mux2
+           (* are we emitting a fault? *)
+           emit_fault
+           (* yes - here it is *)
+           fault_item
+           (* no - use the passed item *)
+           passed
+        )
+
   ; control_ready_o = control_ready
   ; idle_o = idle
   }
-;;
+[@@@ocamlformat "enable"]
 
 let hierarchical ?instance scope i =
   let module H = Hierarchy.In_scope (I) (O) in
