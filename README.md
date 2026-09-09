@@ -12,7 +12,8 @@ profiles and what remains. It does not meet 156.25 MHz on the Arty's
 `xc7a100tcsg324-1`, which is the functional-validation part and runs at a 25 MHz
 application clock. [Phase 7 integration](docs/phase7_integration.md) now supplies
 the Arty harness, UART counters, synthetic sender and passing full MII simulation.
-Physical board acceptance remains pending.
+The native harness also passes Vivado synthesis/implementation timing and all seven
+physical Ethernet/UART cases on the programmed Arty A7.
 
 The [delivery plan](docs/cme_mdp3_10g_parser_plan.md) describes the phases and
 acceptance criteria. The [Phase 0 contracts](docs/phase0_contracts.md) define the
@@ -31,9 +32,10 @@ Use the existing `5.2.0+ox` opam switch (override with `OPAM_SWITCH`):
 ```
 
 `./bootstrap.sh --install-deps` installs the project dependencies if needed.
-`./tools/dune_fmt.sh` applies the pinned formatter. The CME generator writes
-`cme_mdp3_feed_parser.v`; use `-- uart` (or no argument) for the existing UART
-target. Generated Verilog is ignored by Git.
+`./tools/dune_fmt.sh` applies the pinned formatter. The CME generator requires an explicit
+target and prints the available subcommands when one is omitted. The `cme` target writes
+`cme_mdp3_feed_parser.v`; generate the native Arty top with
+`-- cme_feed_parser_validation_harness_arty`. Generated Verilog is ignored by Git.
 
 Phase 1's bounded FIFOs, two-beat byte aligner, and pass-through fixture are
 integrated into the parser top. The
@@ -83,8 +85,9 @@ RTL MBP decoder and activates the public parser, including schema/version rules,
 runtime group skips, event storage, and full-payload differential checks. Packet
 truncation tests verify ordered cut-through prefixes and recovery under stalls.
 
-Phase 7 integration verification (requires the patched sibling networking checkout
-and Icarus; see [setup and acceptance](docs/phase7_integration.md)):
+Phase 7 integration verification uses the installed `hardcaml_networking` package to emit
+the native `cme_feed_parser_validation_harness_arty` hierarchy and requires Icarus; see
+[setup and acceptance](docs/phase7_integration.md):
 
 ```sh
 ./validation/phase7/check.sh
