@@ -67,157 +67,196 @@ let create (_scope : Scope.t) (i : _ I.t) =
   let module T = Cme_types in
 
   (* readily available *)
-  let active = i.en_i &: ~:(i.reset_i) in
+  let active = (i.en_i &: ~:(i.reset_i)) -- "active" in
 
   let item = T.Packet_item.Of_signal.unpack i.item_i in
 
-  (* Later derived hangers: each is the Q net of a register driven at the bottom of this
-     function. Named so timing reports and waveforms read as [expected -> channel_valid]
-     rather than [signal_reg_3_reg[6]]; see the naming rule in docs/timing_notes.md. *)
+  (* State hangers: each is the Q net of a register driven in the register file at the
+     bottom of this function
+
+     The feedback is structural, not stylistic - every one of
+     these is read by the handshake logic that computes its own next value, so the cycle
+     is real and closes through the flop.
+
+     Named so timing reports and waveforms read as
+     [expected -> channel_valid] rather than [signal_reg_3_reg[6]]; see the naming rule
+     in docs/timing_notes.md. Declaration order matches the register file below
+  *)
   let initialized   = Signal.wire 1  -- "initialized"   in
+  let expected      = Signal.wire 32 -- "expected"      in
   let channel_valid = Signal.wire 1  -- "channel_valid" in
   let dropping      = Signal.wire 1  -- "dropping"      in
   let gap_sent      = Signal.wire 1  -- "gap_sent"      in
   let open_packet   = Signal.wire 1  -- "open_packet"   in
-  let expected      = Signal.wire 32 -- "expected"      in
+
+  (* ------------------------------------------------------------------ *)
+  (* combinational                                                      *)
+  (* ------------------------------------------------------------------ *)
 
   let idle = ~:(dropping |:
                 gap_sent |:
                 open_packet)
+             -- "idle"
   in
 
-  let control_ready = active &: idle &: i.quiescent_i in
-  let session_reset = control_ready &: i.session_reset_i in
+  let control_ready = (active &: idle &: i.quiescent_i) -- "control_ready" in
+  let session_reset = (control_ready &: i.session_reset_i) -- "session_reset" in
 
   (* are we ready and not resetting the session and doing a resync *)
-  let resync = control_ready &:
-               ~:(i.session_reset_i) &:
-               i.resync_valid_i
+  let resync = (control_ready &:
+                ~:(i.session_reset_i) &:
+                i.resync_valid_i)
+               -- "resync"
   in
 
-  let control = session_reset |: resync in
+  let control = (session_reset |: resync) -- "control" in
 
   (* are we beginning a packet? where do the sideband items come from? *)
-  let start = item.kind ==:. T.Packet_item_kind.start in
-  let diagnostic = item.kind ==:. T.Packet_item_kind.diagnostic in
+  let start = (item.kind ==:. T.Packet_item_kind.start) -- "start" in
+  let diagnostic = (item.kind ==:. T.Packet_item_kind.diagnostic) -- "diagnostic" in
 
   (* last indicator; interesting derive for the start/body_empty pair *)
-  let last = item.beat.last |: (start &: item.body_empty) in
+  let last = (item.beat.last |: (start &: item.body_empty)) -- "last" in
 
   (* actual sequencing wire *)
-  let delta = item.context.packet_seq -: expected in
-  let late = msb delta in
+  let delta = (item.context.packet_seq -: expected) -- "delta" in
+  let late = msb delta -- "late" in
 
   let fault =
-    start &: (* have we started? *)
-    initialized &: (* are we stream reading? *)
-    (delta <>:. 0) &: (* if the delta is greater than 0 then cook *)
-    ~:gap_sent (* if a gap is sent then a fault has happened obviously *)
+    (start &: (* have we started? *)
+     initialized &: (* are we stream reading? *)
+     (delta <>:. 0) &: (* if the delta is greater than 0 then cook *)
+     ~:gap_sent (* if a gap is sent then a fault has happened obviously *)
+    )
+    -- "fault"
   in
 
-  let emit_fault = fault &: ~:dropping in
+  let emit_fault = (fault &: ~:dropping) -- "emit_fault" in
 
   (* handshake  *)
-  let valid = active &: i.valid_i &: ~:dropping &: ~:control in
-  let ready = active &:
-              ~:control &:
-              (dropping |:
-               (i.ready_i &:
-                ~:emit_fault)
-              )
+  let valid = (active &: i.valid_i &: ~:dropping &: ~:control) -- "valid" in
+  let ready = (active &:
+               ~:control &:
+               (dropping |:
+                (i.ready_i &:
+                 ~:emit_fault)
+               ))
+              -- "ready"
   in
 
-  let input_transfer = i.valid_i &: ready in
-  let fault_transfer = valid &: i.ready_i &: emit_fault in
-  let admit = input_transfer &: start &: ~:dropping in
+  let input_transfer = (i.valid_i &: ready) -- "input_transfer" in
+  let fault_transfer = (valid &: i.ready_i &: emit_fault) -- "fault_transfer" in
+  let admit = (input_transfer &: start &: ~:dropping) -- "admit" in
 
-  initialized
-  <-- Signal.reg
-        spec
-        ~enable:active
-        (mux2
-          (* did the session reset? *)
-           session_reset
+  (* ------------------------------------------------------------------ *)
+  (* next state                                                         *)
+  (* ------------------------------------------------------------------ *)
 
-           (* yes : zero it *)
-           gnd
+  let initialized_next =
+    mux2
+      (* did the session reset? *)
+      session_reset
 
-           (* no - *)
-           (mux2
-              (resync |: admit) (* if we're resyncing or admitting, then write 1 *)
-              vdd (* 1 *)
-              initialized (* else the previously held value *)
-           )
-        );
+      (* yes : zero it *)
+      gnd
 
-  expected
-  <-- Signal.reg
-        spec
-        ~enable:active
-        (mux2
-          (* is the session being reset? *)
-           session_reset
+      (* no - *)
+      (mux2
+         (resync |: admit)
+         vdd
+         initialized
+      )
+    -- "initialized_next"
+  in
 
-          (* zero out *)
-           (zero 32)
+  let expected_next =
+    mux2
+      (* is the session being reset? *)
+      session_reset
 
-           (mux2
-             (* are we re-syncing? *)
-              resync
+      (* zero out *)
+      (zero 32)
 
-              (* yes -*)
-              i.resync_next_seq_i (* next seq num *)
+      (mux2
+         (* are we re-syncing? *)
+         resync
 
-              (* no - cascade *)
-              (mux2
-                 admit (* do we admit the item?  *)
-                 (item.context.packet_seq +:. 1) (* yes -> increm the packet seq expected next cycle val *)
-                 expected (* hold the expected *)
-              )
-           )
-        );
+         (* yes - *)
+         i.resync_next_seq_i
 
-  (* marked low if we miss a seq num *)
-  channel_valid
-  <-- Signal.reg
-        spec
-        ~enable:active
-        (mux2
-           session_reset
-           gnd
-           (mux2
-              resync
-              vdd
-              (mux2
-                 (fault_transfer &: ~:late)
-                 gnd
-                 (mux2
-                    (admit &: ~:initialized)
-                    vdd
-                    channel_valid)))
-        );
+         (* no - *)
+         (mux2
+            admit
+            (item.context.packet_seq +:. 1)
+            expected
+         )
+      )
+    -- "expected_next"
+  in
 
-  dropping
-  <-- Signal.reg
-        spec
-        ~enable:active
-        (mux2 (fault_transfer &: late) vdd (mux2 (input_transfer &: last) gnd dropping));
+  let channel_valid_next =
+    mux2
+      session_reset
+      gnd
+      (mux2
+         resync
+         vdd
+         (mux2
+            (fault_transfer &: ~:late)
+            gnd
+            (mux2
+               (admit &: ~:initialized)
+               vdd
+               channel_valid)))
+    -- "channel_valid_next"
+  in
 
-  gap_sent
-  <-- Signal.reg
-        spec
-        ~enable:active
-        (mux2 (fault_transfer &: ~:late) vdd (mux2 admit gnd gap_sent));
+  let dropping_next =
+    mux2
+      (fault_transfer &: late)
+      vdd
+      (mux2 (input_transfer &: last) gnd dropping)
+    -- "dropping_next"
+  in
 
-  open_packet
-  <-- Signal.reg spec ~enable:active (mux2 (input_transfer &: ~:diagnostic) ~:last open_packet);
+  let gap_sent_next =
+    mux2
+      (fault_transfer &: ~:late)
+      vdd
+      (mux2 admit gnd gap_sent)
+    -- "gap_sent_next"
+  in
+
+  let open_packet_next =
+    mux2 (input_transfer &: ~:diagnostic) ~:last open_packet
+    -- "open_packet_next"
+  in
+
+  (* ------------------------------------------------------------------ *)
+  (* register file                                                      *)
+  (* ------------------------------------------------------------------ *)
+
+  (* [reg] shadows [Signal.reg] with [spec] and [active] already applied, so every state
+     flop below shares one clock, clear and pause, and a register added later cannot pick
+     up different behaviour by accident. Note the arity: this [reg] takes only the next
+     value. A flop needing a different spec is written out in full with [Signal.reg] and
+     a comment saying why.
+  *)
+  let reg d = Signal.reg spec ~enable:active d in
+
+  initialized   <-- reg initialized_next;
+  expected      <-- reg expected_next;
+  channel_valid <-- reg channel_valid_next;
+  dropping      <-- reg dropping_next;
+  gap_sent      <-- reg gap_sent_next;
+  open_packet   <-- reg open_packet_next;
 
   let admitted_context =
     { item.context with channel_valid =
-                          mux2
-                            initialized
-                            channel_valid
-                            vdd
+        mux2
+        initialized
+        channel_valid
+        vdd
     }
   in
 
