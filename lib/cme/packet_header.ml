@@ -37,16 +37,41 @@ module O = struct
   [@@deriving hardcaml]
 end
 
+module State = struct
+  type t =
+    | Collecting (* accumulating the twelve-byte technical header *)
+    | Body (* streaming header-stripped payload beats *)
+    | Header_only (* the packet was exactly twelve bytes; emit the empty marker *)
+    | Short_header (* the packet ended before twelve bytes; emit the diagnostic *)
+  [@@deriving sexp_of, compare ~localize, enumerate]
+end
+
+[@@@ocamlformat "disable"]
 let create scope (i : _ I.t) =
-  let module T = Cme_types in
+
+  (* spec *)
   let spec = Reg_spec.create ~clock:i.clock_i ~clear:i.reset_i () in
-  let active = i.en_i &: ~:(i.reset_i) in
-  (* 0: first eight header bytes; 1: remaining four; 2: body; 3: header-only marker; 4:
-     short-header diagnostic. *)
-  let state = wire 3 in
-  let consume_count, consume_valid = wire 4, wire 1 in
+
+  (* local scoping *)
+  let module T = Cme_types in
+
+  (* readily assignmable here *)
+  let active = i.en_i &: ~:(i.reset_i) -- "packet_header_active" in
+
+  (* The state register. [sm.current] is its q and [sm.is] hands back plain
+     combinational signals, so the state is readable here even though the transitions are
+     only compiled once the aligner outputs exist. *)
+  let sm = Always.State_machine.create (module State) spec ~enable:active in
+  let _ : Signal.t = sm.current -- "packet_header_state" in
+
+  (* Forward references: these are inputs to the aligner instance below but their values
+     are derived from that same instance's outputs, so they must be placeholders. *)
+  let consume_count = Signal.wire 4 -- "packet_header_consume_count" in
+  let consume_valid = Signal.wire 1 -- "packet_header_consume_valid" in
+
   let a =
     Byte_aligner.hierarchical
+      ~max_consume:15
       scope
       { clock_i = i.clock_i
       ; reset_i = i.reset_i
@@ -61,49 +86,40 @@ let create scope (i : _ I.t) =
       ; consume_valid_i = consume_valid
       }
   in
-  let collecting = state <:. 2 in
-  let required =
-    mux2 (state ==:. 0) (of_int_trunc ~width:5 8) (of_int_trunc ~width:5 4)
-  in
+  let collecting = sm.is State.Collecting in
+  let required = of_int_trunc ~width:5 12 in
   let enough = a.available_o >=: required in
   let collect = collecting &: a.valid_o &: (enough |: a.boundary_o) in
   (* Eight bytes ending the packet are still a short twelve-byte header. Do not enter the
      second collector after consuming that boundary. *)
-  let short =
-    collect &: (~:enough |: (state ==:. 0 &: a.boundary_o &: (a.available_o ==:. 8)))
-  in
+  let short = collect &: ~:enough in
+  let header_only = a.boundary_o &: (a.available_o ==:. 12) in
   let body_count = mux2 (a.available_o >=:. 8) (of_int_trunc ~width:5 8) a.available_o in
   let body_last = a.boundary_o &: (a.available_o <=:. 8) in
-  let body_valid = state ==:. 2 &: a.valid_o &: (a.available_o >=:. 8 |: a.boundary_o) in
-  let valid = active &: (body_valid |: (state ==:. 3) |: (state ==:. 4)) in
+  let body_valid = sm.is State.Body &: a.valid_o &: (a.available_o >=:. 8 |: a.boundary_o) in
+  let valid = active &: (body_valid |: sm.is State.Header_only |: sm.is State.Short_header) in
   let transfer = valid &: i.ready_i in
   consume_valid <-- (collect |: (body_valid &: i.ready_i));
   consume_count
   <-- uresize (mux2 collecting (mux2 enough required a.available_o) body_count) ~width:4;
-  state
-  <-- reg
-        spec
-        ~enable:active
-        (mux2
-           collect
-           (mux2
-              short
-              (of_int_trunc ~width:3 4)
-              (mux2
-                 (state ==:. 0)
-                 (of_int_trunc ~width:3 1)
-                 (mux2
-                    (a.boundary_o &: (a.available_o ==:. 4))
-                    (of_int_trunc ~width:3 3)
-                    (of_int_trunc ~width:3 2))))
-           (mux2 (transfer &: (state <>:. 2 |: body_last)) (zero 3) state));
+  Always.(compile
+    [ sm.switch
+        [ State.Collecting,
+          [ when_ collect
+              [ if_ short
+                  [ sm.set_next State.Short_header ]
+                  [ if_ header_only
+                      [ sm.set_next State.Header_only ]
+                      [ sm.set_next State.Body ] ] ] ]
+        ; State.Body,         [ when_ (transfer &: body_last) [ sm.set_next State.Collecting ] ]
+        ; State.Header_only,  [ when_ transfer [ sm.set_next State.Collecting ] ]
+        ; State.Short_header, [ when_ transfer [ sm.set_next State.Collecting ] ]
+        ] ]);
   let first_half =
-    reg spec ~enable:(collect &: (state ==:. 0)) (select a.data_o ~high:63 ~low:0)
+    reg spec ~enable:(collect &: collecting) (select a.data_o ~high:63 ~low:0)
   in
-  let second_half =
-    reg spec ~enable:(collect &: (state ==:. 1)) (select a.data_o ~high:31 ~low:0)
-  in
-  let timestamp = reg spec ~enable:(collect &: (state ==:. 0)) a.ingress_timestamp_o in
+  let second_half = reg spec ~enable:collect (select a.data_o ~high:95 ~low:64) in
+  let timestamp = reg spec ~enable:(collect &: collecting) a.ingress_timestamp_o in
   let missing_offset =
     reg spec ~enable:short (a.packet_byte_offset_o +: uresize a.available_o ~width:16)
   in
@@ -159,12 +175,12 @@ let create scope (i : _ I.t) =
   ; item_o =
       T.Packet_item.Of_signal.pack
         (T.Packet_item.Of_signal.mux2
-           (state ==:. 4)
+           (sm.is State.Short_header)
            error
-           (T.Packet_item.Of_signal.mux2 (state ==:. 3) marker body))
-  ; idle_o = state ==:. 0 &: (a.available_o ==:. 0)
+           (T.Packet_item.Of_signal.mux2 (sm.is State.Header_only) marker body))
+  ; idle_o = collecting &: (a.available_o ==:. 0)
   }
-;;
+[@@@ocamlformat "enable"]
 
 let hierarchical ?instance scope i =
   let module H = Hierarchy.In_scope (I) (O) in
