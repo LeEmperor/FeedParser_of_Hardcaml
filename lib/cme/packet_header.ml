@@ -177,8 +177,9 @@ consider example: 32B payload = 12B header + 20B payload
 
   consume_valid <-- (collect |: (body_valid &: i.ready_i));
 
-  consume_count
-  <-- uresize (
+  (* twelve on a full header grab, whatever the boundary left behind on a short one, and a
+     body beat otherwise *)
+  let request_bytes =
     mux2
       (* if we're collecting header *)
       collecting
@@ -195,8 +196,24 @@ consider example: 32B payload = 12B header + 20B payload
          a.available_o
 
       (* else we consume the amount of body presented to us *)
+      )
       body_count
-  ) ~width:4;
+    -- "packet_header_request_bytes"
+  in
+
+  (* Every count above is five bits and [consume_count_i] is four, so the request has to be
+     under sixteen before it narrows. It is on every arm: [required] is twelve, [body_count]
+     is capped at eight, and the bare [available_o] arm is reachable only under [~enough],
+     which pins it below twelve. [available_o] is the only arm that can set bit four at all
+     - it reaches sixteen with both window slots joined - and [enough] is exactly what keeps
+     that value out of this mux.
+
+     Deliberately a narrowing uresize and not a clamp. If that guard ever moved, sixteen
+     narrows to zero, the aligner's [consume] requires a nonzero count, and this stage
+     stalls. Clamping to fifteen would instead consume fifteen of the sixteen and leave a
+     byte behind, misparsing the rest of the packet in silence. A hang is the louder
+     failure. *)
+  consume_count <-- uresize request_bytes ~width:4;
 
   (* state transition assignment *)
   Always.(compile
@@ -231,18 +248,31 @@ consider example: 32B payload = 12B header + 20B payload
     Signal.reg spec ~enable:short (a.packet_byte_offset_o +: uresize a.available_o ~width:16)
   in
 
+  (* semi-stateful reg; might be able to use this to mitigate the main state registers *)
   let started =
     reg_fb spec ~enable:active ~width:1 ~f:(fun q ->
         mux2
+          (* are we in header grab prime state *)
           collecting
-          gnd (mux2
-                 (transfer &: body_valid)
-                 vdd
-                 q
-              )
+
+          (* yes - zero out *)
+          gnd
+
+          (* no - cascade *)
+          (mux2
+            (* are we tranfering && is the body valid - means we're in body automatically *)
+            (transfer &: body_valid)
+
+            (* yes- 1 *)
+            vdd
+
+            (* no - persist (gnd) *)
+            q
+          )
       )
   in
 
+  (* form context out of the packed defintion in Cme_types *)
   let context : _ T.Packet_context.t =
     { ingress_timestamp = timestamp
     ; source_id = gnd
@@ -253,8 +283,14 @@ consider example: 32B payload = 12B header + 20B payload
     }
   in
 
+  (* const zero? *)
   let empty = T.Packet_item.Of_signal.zero () in
 
+  (* build 8 candidates of the numbers in cascading maps locally
+      Helper_circuits might contain this, but the local re-hash takes 4 seconds
+
+      if we for example formally proved a keep base, then we might use that instead
+  *)
   let keep =
     mux
       (uresize body_count ~width:4)
@@ -264,14 +300,21 @@ consider example: 32B payload = 12B header + 20B payload
       )
   in
 
+  (* form body/context pair *)
   let body =
     { empty with
-      kind = mux2 started (of_int_trunc ~width:2 T.Packet_item_kind.body) (zero 2)
+
+      kind = mux2
+          started
+          (of_int_trunc ~width:2 T.Packet_item_kind.body)
+          (zero 2)
+
     ; context =
         T.Packet_context.Of_signal.mux2
           started
           (T.Packet_context.Of_signal.zero ())
           context
+
     ; beat =
         { data = Byte_aligner.mask_data (select a.data_o ~high:63 ~low:0) keep
         ; keep
