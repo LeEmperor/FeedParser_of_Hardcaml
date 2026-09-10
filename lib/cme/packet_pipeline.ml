@@ -42,13 +42,23 @@ module O = struct
   [@@deriving hardcaml]
 end
 
+[@@@ocamlformat "disable"]
 let create ?(config = Cme_config.default) scope (i : _ I.t) =
-  Cme_config.validate config;
+  (* spec *)
   let spec = Reg_spec.create ~clock:i.clock_i ~clear:i.reset_i () in
+
+  (* config elab config *)
+  Cme_config.validate config;
+
   let input_open = wire 1 in
+
+  (* direct derives *)
   let request = i.session_reset_i |: i.resync_valid_i in
   let allow = ~:request |: input_open in
+
+  (* hanger ties *)
   let header_ready, sequence_ready = wire 1, wire 1 in
+
   let fifo =
     Ingress_fifo.hierarchical
       ~depth:config.ingress_fifo_depth
@@ -65,8 +75,11 @@ let create ?(config = Cme_config.default) scope (i : _ I.t) =
       ; ready_i = header_ready
       }
   in
+
+  (* propagate the backpressure *)
   let ready = fifo.ready_o &: allow in
-  input_open <-- reg spec ~enable:(ready &: i.valid_i) ~:(i.last_i);
+  input_open <-- Signal.reg spec ~enable:(ready &: i.valid_i) ~:(i.last_i);
+
   let header =
     Packet_header.hierarchical
       scope
@@ -82,7 +95,9 @@ let create ?(config = Cme_config.default) scope (i : _ I.t) =
       ; ready_i = sequence_ready
       }
   in
+
   header_ready <-- header.ready_o;
+
   let sequencer =
     Single_feed_sequencer.hierarchical
       scope
@@ -99,13 +114,15 @@ let create ?(config = Cme_config.default) scope (i : _ I.t) =
       ; resync_next_seq_i = i.resync_next_seq_i
       }
   in
+
   sequence_ready <-- sequencer.ready_o;
+
   { O.ready_o = ready
   ; valid_o = sequencer.valid_o
   ; item_o = sequencer.item_o
   ; control_ready_o = sequencer.control_ready_o
   }
-;;
+[@@@ocamlformat "enable"]
 
 let hierarchical ?(config = Cme_config.default) ?instance scope i =
   let module H = Hierarchy.In_scope (I) (O) in

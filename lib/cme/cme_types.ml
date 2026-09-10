@@ -116,6 +116,7 @@ module Event = struct
   let width = List.fold_left ( + ) 0 (to_list port_widths)
 end
 
+(* does this have Of_signal derived on it? *)
 module Packet_item_kind = struct
   let width = 2
   let start = 0
