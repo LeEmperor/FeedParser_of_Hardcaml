@@ -1,0 +1,11 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Single-feed sequencer control-fence, drop, gap and sequence-sign invariants.
+
+(library
+ (name single_feed_sequencer_inline_tests)
+ (modules single_feed_sequencer_invariant_tests)
+ (inline_tests (flags (:standard -source-tree-root .)))
+ (libraries core hardcaml cme_of_hardcaml)
+ (preprocess (pps ppx_hardcaml ppx_jane)))
