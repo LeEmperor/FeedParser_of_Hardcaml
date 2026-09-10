@@ -60,6 +60,7 @@ end
 
 [@@@ocamlformat "disable"]
 let create (_scope : Scope.t) (i : _ I.t) =
+
   (* spec *)
   let spec = Reg_spec.create ~clock:i.clock_i ~clear:i.reset_i () in
 
