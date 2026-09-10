@@ -1,7 +1,7 @@
 (* University of Florida *)
 (* Author: Bohdan Purtell *)
 (* Module: "event_fifo_expect_tests.ml" *)
-(* One-entry FIFO: accepted replacement, enable pause, reset cancellation. *)
+(* One-entry FIFO: drain-then-accept replacement, enable pause, reset cancellation. *)
 
 open! Core
 open Event_fifo_testbench
@@ -22,11 +22,14 @@ let%expect_test "one-entry elasticity" =
     ((phase pause)
      (before ((ready false) (valid false) (low_byte 129) (high_bit true)))
      (after ((ready false) (valid false) (low_byte 129) (high_bit true))))
-    ((phase replace)
-     (before ((ready true) (valid true) (low_byte 129) (high_bit true)))
-     (after ((ready true) (valid true) (low_byte 50) (high_bit true))))
+    ((phase drain_only)
+     (before ((ready false) (valid true) (low_byte 129) (high_bit true)))
+     (after ((ready true) (valid false) (low_byte 129) (high_bit true))))
+    ((phase accept)
+     (before ((ready true) (valid false) (low_byte 129) (high_bit true)))
+     (after ((ready false) (valid true) (low_byte 50) (high_bit true))))
     ((phase drain)
-     (before ((ready true) (valid true) (low_byte 50) (high_bit true)))
+     (before ((ready false) (valid true) (low_byte 50) (high_bit true)))
      (after ((ready true) (valid false) (low_byte 50) (high_bit true))))
     ((phase enqueue_again)
      (before ((ready true) (valid false) (low_byte 50) (high_bit true)))
