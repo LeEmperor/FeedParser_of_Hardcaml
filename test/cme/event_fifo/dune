@@ -1,0 +1,12 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Event-FIFO Step testbench, unit/Quickcheck checks, and expect traces.
+
+(library
+ (name event_fifo_inline_tests)
+ (modules event_fifo_testbench event_fifo_unit_quickcheck_tests event_fifo_expect_tests)
+ ; ppx_expect v0.18 preview needs the copied source directory as its root.
+ (inline_tests (flags (:standard -source-tree-root .)))
+ (libraries core hardcaml cme_of_hardcaml hardcaml_step_testbench hardcaml_verif cme_verif stream_test_support)
+ (preprocess (pps ppx_hardcaml ppx_jane)))

@@ -1,0 +1,10 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Shared CME stream scenarios and active contract-monitor tests.
+
+(library
+ (name cme_verif)
+ (inline_tests (flags (:standard -source-tree-root .)))
+ (libraries core hardcaml cme_of_hardcaml hardcaml_step_testbench hardcaml_verif stream_test_support)
+ (preprocess (pps ppx_hardcaml ppx_jane)))

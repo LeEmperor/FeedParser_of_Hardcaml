@@ -1,0 +1,19 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Phase 4 schema generator, golden decoder, synthetic fixture, and PCAP tests.
+
+(library
+ (name schema_inline_tests)
+ (modules schema_fixture schema_unit_quickcheck_tests schema_expect_tests)
+ (inline_tests
+  (deps ../../../docs/templates.xml ../../../docs/templates.sha256)
+  (flags (:standard -source-tree-root .)))
+ (libraries core cme_schema cme_of_hardcaml base_quickcheck)
+ (preprocess (pps ppx_jane ppx_expect)))
+
+(rule
+ (alias runtest)
+ (deps ../../../docs/templates.xml ../../../docs/templates.sha256)
+ (action
+  (chdir ../../.. (run sha256sum -c docs/templates.sha256))))

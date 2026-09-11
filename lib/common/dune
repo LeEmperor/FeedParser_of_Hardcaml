@@ -1,25 +1,25 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; RTL generation entry point. The common blocks this used to define -- Helper_circuits,
+; Board_top, Clk_div, Second_pulse -- and the UART pair now come from hardcaml_networking,
+; which is their single source of truth. It is an ordinary opam dependency: reach its
+; blocks as Common.Clk_div, Mii.Mac_top, Udp.Udp_rx_64_mac_top after
+; `open! Hardcaml_networking`.
 (executables
  (modes byte exe)
  (names generate)
  (libraries
   core
+  core.command
+  core_unix.command_unix
   hardcaml
-  uart_of_hardcaml
-  helper_circuits
+  jane_rope
+  hardcaml_networking
   cme_of_hardcaml
-  )
+  cme_board_validation)
  (modules generate)
  (flags (:standard -w -27-57-33-34-35-40-63-47-26))
  (preprocess
   (pps ppx_jane))
  (promote))
-
-(library
- (name helper_circuits)
- (wrapped false)
- (libraries core hardcaml hardcaml_circuits)
- (modules helper_circuits board_top clk_div second_pulse)
- (flags (:standard -w -27-57-33-34-35-40-63-47-26))
- (preprocess
-  (pps ppx_hardcaml ppx_jane))
-)

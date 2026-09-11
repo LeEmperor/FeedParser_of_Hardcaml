@@ -1,0 +1,18 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Phase 7's portable ABI/oracle checks; external MII simulation uses check.sh.
+(executable
+ (name phase7_contracts)
+ (modules phase7_contracts)
+ (libraries core hardcaml cme_of_hardcaml cme_schema)
+ (preprocess (pps ppx_jane)))
+
+(rule
+ (alias runtest)
+ (deps board_cases.py test_board_cases.py ../../docs/templates.xml)
+ (action
+  (progn
+   (run python3 -B %{dep:test_board_cases.py})
+   (run python3 %{dep:board_cases.py} vectors vectors)
+   (run %{exe:phase7_contracts.exe} vectors %{dep:../../docs/templates.xml}))))

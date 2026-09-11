@@ -1,0 +1,16 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; CME SBE XML tooling, descriptor generator, and independent software oracle.
+
+(library
+ (name cme_schema)
+ (modules (:standard \ schema_descriptor_generator))
+ (libraries core xmlm)
+ (preprocess (pps ppx_jane)))
+
+(executable
+ (name schema_descriptor_generator)
+ (modules schema_descriptor_generator)
+ (libraries core core_unix.command_unix cme_schema)
+ (preprocess (pps ppx_jane)))

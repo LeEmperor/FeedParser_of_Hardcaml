@@ -1,0 +1,9 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Shared Bits conversion and bounded Step/Cyclesim fixture library.
+
+(library
+ (name hardcaml_verif)
+ (libraries core hardcaml hardcaml_step_testbench)
+ (preprocess (pps ppx_hardcaml ppx_jane)))

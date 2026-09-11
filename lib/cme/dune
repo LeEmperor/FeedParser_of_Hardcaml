@@ -1,6 +1,24 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Portable CME RTL library.
+
+(rule
+ (targets generated_mbp_descriptor.ml)
+ (deps ../../docs/templates.xml)
+ (action
+  (run
+   %{exe:../schema/schema_descriptor_generator.exe}
+   -schema
+   %{dep:../../docs/templates.xml}
+   -template
+   MDIncrementalRefreshBook46
+   -output
+   %{targets})))
+
 (library
  (name cme_of_hardcaml)
- (libraries hardcaml helper_circuits)
+ (libraries core hardcaml hardcaml_circuits)
  (preprocess
   (pps ppx_hardcaml ppx_jane))
  (flags (:standard -w -27-57-33-34-35-40-63-47-26)))

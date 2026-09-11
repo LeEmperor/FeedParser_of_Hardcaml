@@ -1,0 +1,33 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; OCaml RTL generation and optional Yosys hierarchy/Icarus elaboration checks.
+
+; RTL generation is OCaml-only; external checks belong solely to the explicit alias.
+(rule
+ (targets
+  cme_ingress_fifo.v
+  cme_event_fifo.v
+  cme_byte_aligner.v
+  cme_packet_pipeline.v
+  cme_sbe_message_iterator.v
+  cme_message_pipeline.v
+  cme_event_orderer.v
+  cme_stream_fixture.v
+  cme_mdp3_feed_parser.v)
+ (action (run %{exe:../generate_stream_fixture.exe} .)))
+
+(rule
+ (alias rtl-check)
+ (deps
+  ../../../scripts/check-rtl.sh
+  cme_ingress_fifo.v
+  cme_event_fifo.v
+  cme_byte_aligner.v
+  cme_packet_pipeline.v
+  cme_sbe_message_iterator.v
+  cme_message_pipeline.v
+  cme_event_orderer.v
+  cme_stream_fixture.v
+  cme_mdp3_feed_parser.v)
+ (action (run bash %{dep:../../../scripts/check-rtl.sh} .)))

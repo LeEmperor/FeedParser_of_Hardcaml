@@ -1,0 +1,11 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Packet-header consume-request invariants.
+
+(library
+ (name packet_header_inline_tests)
+ (modules packet_header_invariant_tests)
+ (inline_tests (flags (:standard -source-tree-root .)))
+ (libraries core hardcaml cme_of_hardcaml)
+ (preprocess (pps ppx_hardcaml ppx_jane)))

@@ -1,0 +1,11 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Generic message pipeline Step, model, unit/property, and expect tests.
+
+(library
+ (name message_pipeline_inline_tests)
+ (modules message_pipeline_testbench message_pipeline_unit_quickcheck_tests message_pipeline_expect_tests)
+ (inline_tests (flags (:standard -source-tree-root .)))
+ (libraries core hardcaml cme_of_hardcaml hardcaml_step_testbench hardcaml_verif stream_test_support)
+ (preprocess (pps ppx_hardcaml ppx_jane)))

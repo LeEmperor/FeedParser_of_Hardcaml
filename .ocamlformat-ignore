@@ -1,0 +1,10 @@
+# Legacy modules are outside the Phase 0 migration. Remove entries when migrated.
+lib/cme/uart_frame_parser.ml
+lib/common/board_top.ml
+lib/common/clk_div.ml
+lib/common/helper_circuits.ml
+lib/common/second_pulse.ml
+lib/uart/uart_rx.ml
+lib/uart/uart_tx.ml
+lib/uart/uart_test_top.ml
+test/common/helper_tb_functions.ml

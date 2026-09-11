@@ -16,7 +16,9 @@ INSTALL_DEPS=0
 REQUIRED_PACKAGES=(
   dune
   hardcaml
+  hardcaml_circuits
   ppx_hardcaml
+  ppx_jane
   core
 )
 
@@ -26,7 +28,7 @@ TEST_PACKAGES=(
 )
 
 DEV_PACKAGES=(
-  ocamlformat
+  ocamlformat.0.26.2+ox2
 )
 
 die() {
@@ -136,7 +138,7 @@ check_packages() {
   local missing=()
 
   for pkg in "${REQUIRED_PACKAGES[@]}" "${TEST_PACKAGES[@]}" "${DEV_PACKAGES[@]}"; do
-    if ! package_is_installed "$pkg"; then
+    if ! package_is_installed "${pkg%%.*}"; then
       missing+=("$pkg")
     fi
   done
@@ -156,6 +158,11 @@ check_packages() {
   fi
 
   echo "Required opam packages are installed."
+  local formatter_version
+  formatter_version="$(opam exec --switch="$SWITCH" -- ocamlformat --version)"
+  if [ "$formatter_version" != "3aa293b" ]; then
+    die "ocamlformat reports '$formatter_version'; .ocamlformat requires 3aa293b (package 0.26.2+ox2)"
+  fi
 }
 
 install_known_packages() {

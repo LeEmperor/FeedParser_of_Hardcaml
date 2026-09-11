@@ -16,6 +16,8 @@ _build/
 # build artifacts
 *.exe
 *.bc
+/cme_mdp3_feed_parser.v
+/uart_test_top.v
 
 # waveforms
 waves/
@@ -26,3 +28,6 @@ env.sh
 
 #claude
 CLAUDE.md
+
+# vendored networking checkout (see scripts/link-networking.sh)
+/vendor/

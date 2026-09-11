@@ -1,0 +1,18 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Parser contract/behavior inline suites and compile-only legacy harness.
+
+(library
+ (name cme_feed_parser_inline_tests)
+ (modules cme_feed_parser_testbench cme_feed_parser_unit_quickcheck_tests cme_feed_parser_expect_tests cme_feed_parser_contract_tests)
+ ; ppx_expect v0.18 preview needs the copied source directory as its root.
+ (inline_tests (flags (:standard -source-tree-root .)))
+ (libraries core hardcaml cme_of_hardcaml hardcaml_step_testbench hardcaml_verif cme_verif stream_test_support)
+ (preprocess (pps ppx_hardcaml ppx_jane)))
+
+(executable
+ (name cme_feed_parser_legacy_assertion_test)
+ (modules cme_feed_parser_legacy_assertion_test)
+ (libraries core hardcaml cme_of_hardcaml stream_test_support)
+ (preprocess (pps ppx_hardcaml ppx_jane)))

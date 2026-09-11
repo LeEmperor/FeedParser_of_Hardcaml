@@ -1,0 +1,18 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Xilinx reporting executable, report support, and failure-path inline tests.
+
+(library
+ (name cme_report_support)
+ (modules report_support report_support_tests)
+ (inline_tests (flags (:standard -source-tree-root .)))
+ (libraries async core core_unix hardcaml_xilinx_reports)
+ (preprocess (pps ppx_jane)))
+
+(executable
+ (name xilinx_reports)
+ (modules xilinx_reports)
+ (libraries async core core_unix.command_unix hardcaml_xilinx_reports
+            cme_of_hardcaml cme_report_support stream_test_support)
+ (preprocess (pps ppx_jane)))

@@ -1,20 +1,13 @@
-(*
-  Module: Uart_frame_parser
-
-  Given no ethernet, need some basic way to frame ethernet transfers in an ethernet-like way.
-
-
-  Assume this module is receiving in the information from a fifo that contains the uart beats.
-*)
+(* University of Florida *)
+(* Author: Bohdan Purtell *)
+(* Module: "uart_frame_parser.ml" *)
+(* Prototype parser for framing UART bytes as Ethernet-like transfers when Ethernet ingress
+   is unavailable. Its input is expected to come from a FIFO containing UART beats. *)
 
 open! Core
 open! Hardcaml
 open! Signal
 open! Hardcaml_circuits
-
-let () =
-  Stdio.print_endline "=== Imported UART Frame Parser ==="
-;;
 
 module I = struct
   type 'a t =
@@ -88,5 +81,3 @@ let create scope i : _ O.t =
   { O.
     bruh = zero 1;
   }
-
-

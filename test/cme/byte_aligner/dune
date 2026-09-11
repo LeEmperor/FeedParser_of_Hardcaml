@@ -1,0 +1,13 @@
+; University of Florida
+; Author: Bohdan Purtell
+; Module: "dune"
+; Byte-aligner Step testbench, unit/Quickcheck checks, and expect traces.
+
+(library
+ (name byte_aligner_inline_tests)
+ (modules byte_aligner_testbench byte_aligner_unit_quickcheck_tests byte_aligner_expect_tests
+          byte_aligner_invariant_tests)
+ ; ppx_expect v0.18 preview needs the copied source directory as its root.
+ (inline_tests (flags (:standard -source-tree-root .)))
+ (libraries core hardcaml cme_of_hardcaml hardcaml_step_testbench hardcaml_verif cme_verif stream_test_support)
+ (preprocess (pps ppx_hardcaml ppx_jane)))

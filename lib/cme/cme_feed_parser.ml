@@ -1,59 +1,65 @@
-(*
-  this is an MDP 3.0 Unpacker
+(* University of Florida *)
+(* Author: Bohdan Purtell *)
+(* Module: "cme_feed_parser.ml" *)
+(* Portable CME MDP 3.0 parser entry point. Phase 0 INACTIVE SKELETON.
+
+   All handshakes are held low, including control_ready_o: no payload or control is
+   accepted until processing is implemented. See docs/phase0_contracts.md.
 *)
 
-open Hardcaml
+open! Hardcaml
 
-module Cme_feed_parser = struct
-  (* input port *)
-  module I = struct
-    type 'a t =
-      { 
-        clk   : 'a;
-        rst   : 'a;
-
-        (* behave like an AXIS *)
-        valid : 'a;
-        data  : 'a [@bytes 64];
-      }
-    [@@deriving hardcaml]
-  end
-
-  (* output port*)
-  module O = struct
-    type 'a t =
-      {
-        data_out : 'a [@bits 512];
-        slave_ready : 'a;
-      }
-    [@@deriving hardcaml]
-  end
-
-  (** Combinational/RTL implementation *)
-  let create (i : _ I.t) : _ O.t =
-
-
-
-
-    (* resulting thingy *)
-    {
-      O.data_out    = Signal.zero 512;
-      O.slave_ready = Signal.vdd;
+module I = struct
+  type 'a t =
+    { (* Application domain; active-high synchronous reset overrides enable. *)
+      clock_i : 'a
+    ; reset_i : 'a
+    ; en_i : 'a
+    ; (* Trusted UDP payload; lane 0 is the earliest byte. *)
+      data_i : 'a [@bits 64]
+    ; keep_i : 'a [@bits 8]
+    ; valid_i : 'a
+    ; first_i : 'a
+    ; last_i : 'a
+    ; ingress_timestamp_i : 'a [@bits 64]
+    ; (* Idle-only sequencer controls; session reset wins over resync. *)
+      session_reset_i : 'a
+    ; resync_valid_i : 'a
+    ; resync_next_seq_i : 'a [@bits 32]
+    ; (* Ordered normalized-event consumer, in the same clock domain. *)
+      event_ready_i : 'a
     }
-
+  [@@deriving hardcaml]
 end
 
-(** Build a [Circuit.t] from the implementation above *)
-let circuit () : Circuit.t =
-  let module C = Circuit.With_interface (Cme_feed_parser.I) (Cme_feed_parser.O) in
-  C.create_exn ~name:"cme_feed_parser" Cme_feed_parser.create
+module O = struct
+  type 'a t =
+    { ready_o : 'a
+    ; control_ready_o : 'a
+    ; event_valid_o : 'a
+    ; event_o : 'a [@bits Cme_types.Event.width]
+    }
+  [@@deriving hardcaml]
+end
 
-  (*create_exn is a function that takes in 
-    1. a labelled name 
-    2. a function that follows the signature:
-        Signal.t I.t -> Signal.t O.t
-    and returns:
-      Circuit.t
-  *)
+let create ?(config = Cme_config.default) (_scope : Scope.t) (_i : Signal.t I.t)
+  : Signal.t O.t
+  =
+  Cme_config.validate config;
+  { O.ready_o = Signal.gnd
+  ; control_ready_o = Signal.gnd
+  ; event_valid_o = Signal.gnd
+  ; event_o = Signal.zero Cme_types.Event.width
+  }
+;;
 
+let hierarchical ?(config = Cme_config.default) ?instance scope i =
+  let module H = Hierarchy.In_scope (I) (O) in
+  H.hierarchical ?instance ~name:"cme_mdp3_feed_parser" ~scope (create ~config) i
+;;
 
+let circuit ?(config = Cme_config.default) () =
+  let scope = Scope.create ~flatten_design:true () in
+  let module C = Circuit.With_interface (I) (O) in
+  C.create_exn ~name:"cme_mdp3_feed_parser" (create ~config scope)
+;;
